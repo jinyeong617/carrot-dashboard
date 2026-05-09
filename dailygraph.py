@@ -25,30 +25,18 @@ st.set_page_config(
 
 st.markdown(
     """
-    <div style="
-        background-color:#1E1E1E;
-        padding:25px;
-        border-radius:15px;
-        margin-bottom:30px;
-    ">
-        <h1 style="
-            color:white;
-            margin-bottom:10px;
-        ">
-            📊 당근 매출 대시보드
-        </h1>
+    <h1 style='font-size:48px;'>
+        📊 당근 매출 대시보드
+    </h1>
 
-        <p style="
-            color:#BBBBBB;
-            font-size:18px;
-            margin:0;
-        ">
-            일별 / 주별 상품 매출 분석 시스템
-        </p>
-    </div>
+    <p style='font-size:22px; color:gray;'>
+        일별 / 주별 상품 매출 분석 시스템
+    </p>
     """,
     unsafe_allow_html=True
 )
+
+st.divider()
 
 # 필요한 컬럼만 사용
 df = df.dropna(subset=["날짜", "상품", "매출"])
