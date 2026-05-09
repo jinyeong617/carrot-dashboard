@@ -27,7 +27,7 @@ st.set_page_config(
 st.markdown(
     """
     <h1 style='font-size:48px;'>
-        st.image("logo.png", width=120)🥕 당근 매출 대시보드 🥕
+        🥕 당근 매출 대시보드 🥕
     </h1>
 
     <p style='font-size:22px; color:gray;'>
@@ -37,7 +37,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-st.image("logo.png", width=120)
+st.image("logo.png", width=200)
 
 st.divider()
 
