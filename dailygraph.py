@@ -21,7 +21,7 @@ color_map = {
 st.set_page_config(
     page_title="일별 상품 매출 분석",
     layout="wide",
-    page_icon="📊"
+    page_icon="-"
 )
 
 
