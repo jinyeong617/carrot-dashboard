@@ -23,6 +23,7 @@ st.set_page_config(
     layout="wide"
 )
 
+
 st.markdown(
     """
     <h1 style='font-size:48px;'>
@@ -37,6 +38,8 @@ st.markdown(
 )
 
 st.divider()
+
+st.subheader("일별 매출")
 
 # 필요한 컬럼만 사용
 df = df.dropna(subset=["날짜", "상품", "매출"])
