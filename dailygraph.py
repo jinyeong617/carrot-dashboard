@@ -1,10 +1,29 @@
+import os
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# 1. 데이터 불러오기
-#df = pd.read_excel("datax.xlsx")
-df = pd.read_excel(r"C:\Users\jinye\OneDrive - 주식회사 소도몰\당근\data.xlsx")
+from sales_stats import HypothesisTestResult, run_default_battery
+
+st.set_page_config(
+    page_title="일별 상품 매출 분석",
+    layout="wide",
+)
+
+_ROOT = Path(__file__).resolve().parent
+_DEFAULT_DATA = _ROOT / "data.xlsx"
+_data_path = Path(os.environ.get("SALES_DATA_PATH", str(_DEFAULT_DATA)))
+if not _data_path.is_file():
+    st.error(
+        f"데이터 파일을 찾을 수 없습니다: `{_data_path}`. "
+        "저장소 루트에 `data.xlsx`를 두거나 환경변수 `SALES_DATA_PATH`로 경로를 지정하세요."
+    )
+    st.stop()
+
+df = pd.read_excel(_data_path)
+
 # 2. 기본 정리 (결측값 제거)
 df = df.dropna(subset=["상품", "매출", "분류"])
 df = df.sort_values(by="매출", ascending=False)
@@ -17,31 +36,6 @@ color_map = {
     cat: colors[i % len(colors)]
     for i, cat in enumerate(categories)
 }
-
-st.set_page_config(
-    page_title="일별 상품 매출 분석",
-    layout="wide",
-)
-
-
-st.markdown(
-    """
-    <h1 style='font-size:48px;'>
-        🥕 당근 매출 대시보드 🥕
-    </h1>
-
-    <p style='font-size:22px; color:gray;'>
-        일별 / 주별 상품 매출 분석 시스템
-    </p>
-    """,
-    unsafe_allow_html=True
-)
-
-st.image("logo.png", width=200)
-
-st.divider()
-
-st.subheader("일별 매출")
 
 # 필요한 컬럼만 사용
 df = df.dropna(subset=["날짜", "상품", "매출"])
@@ -79,6 +73,27 @@ daily_sales = (
     .reset_index()
 )
 
+daily_total_sales = (
+    df.groupby("날짜", as_index=False)["매출"]
+    .sum()
+    .sort_values("날짜")
+    .reset_index(drop=True)
+)
+
+if daily_total_sales.empty:
+    st.error("일별 총매출이 없습니다. 날짜·매출 데이터를 확인하세요.")
+    st.stop()
+
+st.sidebar.caption(f"데이터 파일: `{_data_path.name}`")
+compare_window = st.sidebar.slider(
+    "최근 vs 직전 비교 일수",
+    min_value=7,
+    max_value=28,
+    value=14,
+    step=1,
+    help="Mann–Whitney 검정에 사용합니다. 최근 N일과 그 직전 N일을 비교합니다.",
+)
+
 # =====================================================
 # 최근 날짜 목록
 # =====================================================
@@ -95,14 +110,104 @@ date_options = [
     for d in date_list
 ]
 
+if not date_options:
+    st.error("분석 가능한 날짜가 없습니다. 날짜·매출 컬럼을 확인하세요.")
+    st.stop()
+
 # =====================================================
 # 오른쪽 날짜 선택 탭
 # =====================================================
 
 selected_date = st.sidebar.radio(
     "날짜 선택",
-    date_options
+    date_options,
+    label_visibility="visible",
 )
+
+hypothesis_results: list[HypothesisTestResult] = run_default_battery(
+    df,
+    daily_total_sales,
+    window_days=int(compare_window),
+)
+
+
+def _render_hypothesis(tr: HypothesisTestResult) -> None:
+    sig = tr.p_value is not None and not pd.isna(tr.p_value) and tr.p_value < tr.alpha
+    with st.expander(tr.title, expanded=False):
+        st.markdown(f"**귀무가설:** {tr.null_hypothesis}")
+        st.markdown(f"**방법:** {tr.method}")
+        c1, c2 = st.columns(2)
+        stat_txt = f"{tr.statistic:.4f}" if tr.statistic is not None else "—"
+        p_txt = f"{tr.p_value:.4g}" if tr.p_value is not None and not pd.isna(tr.p_value) else "—"
+        c1.metric("검정통계량", stat_txt)
+        c2.metric("p-value", p_txt)
+        if sig:
+            st.success(tr.conclusion_ko)
+        else:
+            st.info(tr.conclusion_ko)
+        st.caption(tr.detail_ko)
+
+
+st.markdown(
+    """
+    <h1 style='font-size:48px;'>
+        🥕 당근 매출 대시보드 🥕
+    </h1>
+
+    <p style='font-size:22px; color:gray;'>
+        일별 / 주별 상품 매출 분석 · 경영 요약 및 가설 검증
+    </p>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.image("logo.png", width=200)
+
+st.divider()
+
+st.subheader("경영 요약 · 데이터 기반 가설")
+date_min = daily_total_sales["날짜"].min()
+date_max = daily_total_sales["날짜"].max()
+total_rev = float(daily_total_sales["매출"].sum())
+n_days = int(daily_total_sales.shape[0])
+n_lines = int(len(df))
+avg_daily = total_rev / n_days if n_days else 0.0
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("분석 기간", f"{date_min:%Y-%m-%d} ~ {date_max:%Y-%m-%d}")
+m2.metric("기간 총매출", f"{total_rev:,.0f}원")
+m3.metric("일수", f"{n_days}일")
+m4.metric("일평균 총매출", f"{avg_daily:,.0f}원")
+
+st.caption(f"라인(거래 행) 수: {n_lines:,}건 · 유의수준 α = 0.05 · 여러 검정을 동시에 보므로 해석은 보수적으로 권장합니다.")
+
+significant = [
+    tr
+    for tr in hypothesis_results
+    if tr.p_value is not None and not pd.isna(tr.p_value) and tr.p_value < tr.alpha
+]
+if significant:
+    st.markdown("**이번 데이터에서 5% 기준으로 ‘차이/관계’가 통계적으로 설명되는 항목:**")
+    for tr in significant:
+        st.markdown(f"- {tr.conclusion_ko}")
+else:
+    st.markdown(
+        "- 현재 기간·표본으로는 아래 검정들에서 5% 유의수준을 넘는 강한 신호가 없습니다. "
+        "가설을 좁히거나(특정 분류·상품), 기간을 늘리면 검정력이 좋아질 수 있습니다."
+    )
+
+st.markdown("---")
+st.markdown("#### 가설 검정 패널 (방법·p-value·결론)")
+st.caption(
+    "매출은 꼬리가 두꺼운 경우가 많아 비모수 검정을 기본으로 합니다. "
+    "통계적 유의는 ‘원인’이 아니라 ‘우연히 이렇게까지 벌어질 확률이 작다’는 의미입니다."
+)
+for tr in hypothesis_results:
+    _render_hypothesis(tr)
+
+st.divider()
+
+st.subheader("일별 매출")
 
 selected_date = pd.to_datetime(selected_date)
 
@@ -175,11 +280,6 @@ st.dataframe(
 #일별 라인 그래프
 #########################
 
-daily_total_sales = (
-    df.groupby("날짜")["매출"]
-    .sum()
-    .reset_index()
-)
 st.subheader("일별 총 매출 추이")
 
 fig_daily_line = px.line(
