@@ -4,8 +4,24 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from sales_columns import (
+    GRAPH_REQUIRED_COLUMNS,
+    apply_column_aliases,
+    missing_required_columns,
+    normalize_column_names,
+)
+
 # 1. 데이터 불러오기 (저장소 루트의 data.xlsx — dailygraph.py와 동일)
 df = pd.read_excel(Path(__file__).resolve().parent / "data.xlsx")
+df = normalize_column_names(df)
+df = apply_column_aliases(df)
+_missing = missing_required_columns(df, required=GRAPH_REQUIRED_COLUMNS)
+if _missing:
+    raise ValueError(
+        f"필수 컬럼 누락: {_missing}. 실제 컬럼: {list(df.columns)}. "
+        "엑셀 첫 행을 상품, 매출, 분류, 날짜로 맞추거나 sales_columns.py의 별칭을 추가하세요."
+    )
+
 # 2. 기본 정리 (결측값 제거)
 df = df.dropna(subset=["상품", "매출", "분류"])
 

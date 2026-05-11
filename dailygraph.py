@@ -5,6 +5,12 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from sales_columns import (
+    apply_column_aliases,
+    format_column_help,
+    missing_required_columns,
+    normalize_column_names,
+)
 from sales_stats import HypothesisTestResult, run_default_battery
 
 st.set_page_config(
@@ -23,6 +29,18 @@ if not _data_path.is_file():
     st.stop()
 
 df = pd.read_excel(_data_path)
+df = normalize_column_names(df)
+df = apply_column_aliases(df)
+_missing_cols = missing_required_columns(df)
+if _missing_cols:
+    st.error(
+        "엑셀에 **필수 컬럼**이 없습니다: "
+        + ", ".join(_missing_cols)
+        + "\n\n이 대시보드는 다음 이름이 필요합니다: **상품**, **매출**, **분류**, **날짜** "
+        "(앞뒤 공백은 자동 제거합니다. 영문 헤더 일부는 자동 매핑됩니다.)\n\n"
+        + format_column_help(list(df.columns))
+    )
+    st.stop()
 
 # 2. 기본 정리 (결측값 제거)
 df = df.dropna(subset=["상품", "매출", "분류"])
