@@ -5,7 +5,7 @@ import streamlit as st
 # 1. 데이터 불러오기
 
 #df = pd.read_excel(r"C:\Users\jinye\OneDrive - 주식회사 소도몰\당근\data.xlsx")
-df = pd.read_csv("data.xlsx")
+df = pd.read_excel("data.xlsx")
 
 
 # 2. 기본 정리 (결측값 제거)
