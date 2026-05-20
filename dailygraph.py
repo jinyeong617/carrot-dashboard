@@ -12,7 +12,7 @@ df = df.sort_values(by="매출", ascending=False)
 
 categories = df["분류"].unique()
 
-colors = px.colors.qualitative.Set2
+colors = px.colors.qualitative.G10
 
 color_map = {
     cat: colors[i % len(colors)]
@@ -132,14 +132,18 @@ fig = px.bar(
     color_discrete_map=color_map,
     title=f"{selected_date.strftime('%Y-%m-%d')} 상품별 매출",
     text="매출",
-    template="plotly_white"
+    template="plotly_white",
+    category_orders={
+    "상품": selected_data["상품"].tolist()
+}
+    
 )
 
 fig.update_layout(
     height=700,
     xaxis_tickangle=-30,
     yaxis_tickformat=",",
-    showlegend=False,
+    showlegend=True,
     xaxis=dict(
         tickfont=dict(size=18)
     )
@@ -406,7 +410,7 @@ fig_week_detail.update_layout(
     height=1100,
     #xaxis_tickangle=-30,
     xaxis_tickformat=",",
-    showlegend=False,
+    showlegend=True,
         margin=dict(
         l=350,
         r=50,
