@@ -1,11 +1,9 @@
-from pathlib import Path
-
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 # 1. 데이터 불러오기 (저장소 루트의 data.xlsx — dailygraph.py와 동일)
-df = pd.read_excel(r"C:\Users\jinye\OneDrive - 주식회사 소도몰\당근\data.xlsx")
+df = pd.read_excel("data.xlsx")
 # 2. 기본 정리 (결측값 제거)
 df = df.dropna(subset=["상품", "매출", "분류"])
 
