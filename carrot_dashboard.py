@@ -10,7 +10,10 @@ import plotly.express as px
 import streamlit as st
 
 DATA_PATH = "data.xlsx"
+MONTHLY_KPI_PATH = "monthly_kpi.xlsx"
 REQUIRED_COLUMNS = ["날짜", "상품", "매출", "분류"]
+CONVERSION_COLUMNS = ["년월", "주차시작", "첫구매전환율", "재구매율"]
+MEMBER_COLUMNS = ["년월", "주차시작", "전체가입자", "전체업체수", "업체평균가입자"]
 DEFAULT_GITHUB_REPO = "jinyeong617/carrot-dashboard"
 RECENT_DATE_LIMIT = 20
 WEEKDAYS_KR = ["월", "화", "수", "목", "금", "토", "일"]
@@ -63,14 +66,18 @@ def github_token_configured() -> bool:
         return False
 
 
-def save_to_github(file_bytes: bytes) -> tuple[bool, str]:
+def save_to_github(
+    file_bytes: bytes,
+    file_path: str = DATA_PATH,
+    commit_message: str | None = None,
+) -> tuple[bool, str]:
     try:
         token = st.secrets["GITHUB_TOKEN"]
         repo = st.secrets.get("GITHUB_REPO", DEFAULT_GITHUB_REPO)
     except (KeyError, FileNotFoundError):
         return False, "GitHub 토큰이 설정되지 않았습니다."
 
-    api_url = f"https://api.github.com/repos/{repo}/contents/{DATA_PATH}"
+    api_url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
@@ -88,7 +95,7 @@ def save_to_github(file_bytes: bytes) -> tuple[bool, str]:
             return False, f"GitHub 조회 실패: {exc.reason}"
 
     body = {
-        "message": "대시보드에서 data.xlsx 업데이트",
+        "message": commit_message or f"대시보드에서 {file_path} 업데이트",
         "content": base64.b64encode(file_bytes).decode("ascii"),
     }
     if sha:
@@ -116,6 +123,97 @@ def get_active_file_bytes() -> bytes | None:
     if Path(DATA_PATH).exists():
         return Path(DATA_PATH).read_bytes()
     return None
+
+
+def get_monthly_kpi_bytes() -> bytes | None:
+    if st.session_state.get("uploaded_monthly_kpi"):
+        return st.session_state.uploaded_monthly_kpi
+    if Path(MONTHLY_KPI_PATH).exists():
+        return Path(MONTHLY_KPI_PATH).read_bytes()
+    return None
+
+
+def format_month_label(month_value: str) -> str:
+    year, month = month_value.split("-")
+    return f"{year}년 {int(month)}월"
+
+
+def format_percent(value: float) -> str:
+    return f"{value * 100:.1f}%"
+
+
+def prepare_conversion_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    missing = [col for col in CONVERSION_COLUMNS if col not in df.columns]
+    if missing:
+        raise ValueError(f"전환_재구매 시트 필수 컬럼 누락: {', '.join(missing)}")
+
+    df = df.dropna(subset=CONVERSION_COLUMNS).copy()
+    df["주차시작"] = pd.to_datetime(df["주차시작"], errors="coerce")
+    df = df.dropna(subset=["주차시작"])
+    df["년월"] = df["년월"].astype(str)
+    df["첫구매전환율"] = pd.to_numeric(df["첫구매전환율"], errors="coerce")
+    df["재구매율"] = pd.to_numeric(df["재구매율"], errors="coerce")
+    df = df.dropna(subset=["첫구매전환율", "재구매율"])
+    return df.sort_values("주차시작").reset_index(drop=True)
+
+
+def prepare_members_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    missing = [col for col in MEMBER_COLUMNS if col not in df.columns]
+    if missing:
+        raise ValueError(f"가입자 시트 필수 컬럼 누락: {', '.join(missing)}")
+
+    df = df.dropna(subset=MEMBER_COLUMNS).copy()
+    df["주차시작"] = pd.to_datetime(df["주차시작"], errors="coerce")
+    df = df.dropna(subset=["주차시작"])
+    df["년월"] = df["년월"].astype(str)
+    for col in ["전체가입자", "전체업체수", "업체평균가입자"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["전체가입자", "전체업체수", "업체평균가입자"])
+    return df.sort_values("주차시작").reset_index(drop=True)
+
+
+@st.cache_data
+def load_monthly_conversion(kpi_version: int, file_bytes: bytes) -> pd.DataFrame:
+    sheet_df = pd.read_excel(io.BytesIO(file_bytes), sheet_name="전환_재구매")
+    return prepare_conversion_dataframe(sheet_df)
+
+
+@st.cache_data
+def load_monthly_members(kpi_version: int, file_bytes: bytes) -> pd.DataFrame:
+    sheet_df = pd.read_excel(io.BytesIO(file_bytes), sheet_name="가입자")
+    return prepare_members_dataframe(sheet_df)
+
+
+def apply_uploaded_file(
+    file_bytes: bytes,
+    file_path: str,
+    session_key: str,
+    version_key: str,
+    *clear_cache_fns,
+) -> None:
+    st.session_state[session_key] = file_bytes
+    st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
+
+    try:
+        Path(file_path).write_bytes(file_bytes)
+    except OSError:
+        pass
+
+    if github_token_configured():
+        saved, message = save_to_github(file_bytes, file_path=file_path)
+        if saved:
+            st.success(message)
+        else:
+            st.warning(f"{message} 이번 접속 동안만 반영됩니다.")
+    else:
+        st.info(
+            "이번 접속에 적용되었습니다. "
+            "Streamlit Cloud에서 영구 저장하려면 GitHub 토큰 설정이 필요합니다."
+        )
+
+    for clear_cache_fn in clear_cache_fns:
+        clear_cache_fn.clear()
+    st.rerun()
 
 
 def format_date_label(date_value: pd.Timestamp) -> str:
@@ -201,80 +299,247 @@ def render_date_panel(
     return pd.to_datetime(st.session_state.selected_date_str)
 
 
-def render_upload_panel() -> None:
-    st.markdown("#### 매출 데이터 업로드")
-    st.caption("기존 `data.xlsx` 전체 파일을 올려 주세요.")
+def render_sales_upload_panel() -> None:
+    st.markdown("#### 매출 데이터")
+    st.caption("`data.xlsx` 전체 파일을 업로드하세요.")
 
     with st.container(border=True):
-        st.markdown("**업로드 방법**")
         st.markdown(
-            "1. 엑셀에서 오늘 데이터를 추가한 뒤 저장\n"
-            "2. 아래에서 파일 선택\n"
-            "3. **대시보드에 적용** 클릭"
+            "1. 엑셀에 오늘 데이터 추가 후 저장\n"
+            "2. 파일 선택\n"
+            "3. **적용** 클릭"
         )
-        st.markdown(
-            "<span style='color:#6c757d; font-size:0.9rem;'>"
-            "필수 컬럼: 날짜 · 상품 · 분류 · 매출"
-            "</span>",
-            unsafe_allow_html=True,
-        )
+        st.caption("필수 컬럼: 날짜 · 상품 · 분류 · 매출")
 
     uploaded = st.file_uploader(
-        "엑셀 파일 선택",
+        "매출 엑셀",
         type=["xlsx"],
-        help="당일 데이터만이 아니라, 누적된 전체 data.xlsx를 업로드하세요.",
+        key="sales_uploader",
         label_visibility="collapsed",
     )
-
     if uploaded is None:
-        st.info("아직 선택된 파일이 없습니다.")
+        st.info("파일을 선택해 주세요.")
         return
 
     file_bytes = uploaded.getvalue()
     try:
         preview_df = prepare_dataframe(pd.read_excel(io.BytesIO(file_bytes)))
-    except ValueError as exc:
+    except (ValueError, Exception) as exc:
         st.error(str(exc))
-        return
-    except Exception as exc:
-        st.error(f"엑셀 파일을 읽을 수 없습니다: {exc}")
         return
 
     last_date = preview_df["날짜"].max()
     first_date = preview_df["날짜"].min()
-    preview_col1, preview_col2 = st.columns(2)
-    preview_col1.metric("데이터 행 수", f"{len(preview_df):,}")
-    preview_col2.metric("기간", f"{first_date.strftime('%m/%d')}~{last_date.strftime('%m/%d')}")
+    col1, col2 = st.columns(2)
+    col1.metric("행 수", f"{len(preview_df):,}")
+    col2.metric("기간", f"{first_date.strftime('%m/%d')}~{last_date.strftime('%m/%d')}")
+    st.success(f"확인 완료 · {format_date_label(last_date)}")
 
-    st.success(
-        f"파일 확인 완료 · 최신 날짜 {format_date_label(last_date)}"
-    )
-
-    if st.button("대시보드에 적용", type="primary", width="stretch"):
-        st.session_state.uploaded_data = file_bytes
-        st.session_state.data_version = (
-            st.session_state.get("data_version", 0) + 1
+    if st.button("매출 데이터 적용", type="primary", width="stretch", key="apply_sales"):
+        apply_uploaded_file(
+            file_bytes,
+            DATA_PATH,
+            "uploaded_data",
+            "data_version",
+            load_and_prepare_data,
         )
 
-        try:
-            Path(DATA_PATH).write_bytes(file_bytes)
-        except OSError:
-            pass
 
-        if github_token_configured():
-            saved, message = save_to_github(file_bytes)
-            if saved:
-                st.success(message)
-            else:
-                st.warning(f"{message} 이번 접속 동안만 반영됩니다.")
-        else:
-            st.info(
-                "이번 접속에 적용되었습니다. "
-                "Streamlit Cloud에서 영구 저장하려면 GitHub 토큰 설정이 필요합니다."
+def render_monthly_upload_panel() -> None:
+    st.markdown("#### 월간 KPI")
+    st.caption("`monthly_kpi.xlsx` 전체 파일을 업로드하세요.")
+
+    with st.container(border=True):
+        st.markdown(
+            "1. `전환_재구매`, `가입자` 시트에 주차 데이터 추가\n"
+            "2. 파일 선택\n"
+            "3. **적용** 클릭"
+        )
+
+    uploaded = st.file_uploader(
+        "월간 KPI 엑셀",
+        type=["xlsx"],
+        key="monthly_uploader",
+        label_visibility="collapsed",
+    )
+    if uploaded is None:
+        st.info("파일을 선택해 주세요.")
+        return
+
+    file_bytes = uploaded.getvalue()
+    try:
+        conversion_df = prepare_conversion_dataframe(
+            pd.read_excel(io.BytesIO(file_bytes), sheet_name="전환_재구매")
+        )
+        members_df = prepare_members_dataframe(
+            pd.read_excel(io.BytesIO(file_bytes), sheet_name="가입자")
+        )
+    except (ValueError, Exception) as exc:
+        st.error(str(exc))
+        return
+
+    col1, col2 = st.columns(2)
+    col1.metric("전환·재구매", f"{len(conversion_df):,}행")
+    col2.metric("가입자", f"{len(members_df):,}행")
+    st.success(
+        "확인 완료 · "
+        f"{format_month_label(conversion_df['년월'].iloc[-1])}까지"
+    )
+
+    if st.button("월간 KPI 적용", type="primary", width="stretch", key="apply_monthly"):
+        apply_uploaded_file(
+            file_bytes,
+            MONTHLY_KPI_PATH,
+            "uploaded_monthly_kpi",
+            "kpi_version",
+            load_monthly_conversion,
+            load_monthly_members,
+        )
+
+
+def render_upload_panel() -> None:
+    tab_sales, tab_monthly = st.tabs(["매출", "월간 KPI"])
+    with tab_sales:
+        render_sales_upload_panel()
+    with tab_monthly:
+        render_monthly_upload_panel()
+
+
+def render_conversion_tab(conversion_df: pd.DataFrame) -> None:
+    months = sorted(conversion_df["년월"].unique(), reverse=True)
+    selected_month = st.selectbox(
+        "월 선택",
+        months,
+        format_func=format_month_label,
+        key="conversion_month",
+    )
+
+    month_df = conversion_df[conversion_df["년월"] == selected_month].copy()
+    month_avg_conversion = month_df["첫구매전환율"].mean()
+    month_avg_repurchase = month_df["재구매율"].mean()
+
+    month_index = months.index(selected_month)
+    prev_conversion_delta = None
+    prev_repurchase_delta = None
+    if month_index < len(months) - 1:
+        prev_month = months[month_index + 1]
+        prev_df = conversion_df[conversion_df["년월"] == prev_month]
+        if not prev_df.empty:
+            prev_conversion_delta = (
+                (month_avg_conversion - prev_df["첫구매전환율"].mean()) * 100
+            )
+            prev_repurchase_delta = (
+                (month_avg_repurchase - prev_df["재구매율"].mean()) * 100
             )
 
-        load_and_prepare_data.clear()
-        st.rerun()
+    col1, col2, col3 = st.columns(3)
+    col1.metric(
+        "평균 첫구매 전환율",
+        format_percent(month_avg_conversion),
+        delta=f"{prev_conversion_delta:.1f}%p" if prev_conversion_delta is not None else None,
+    )
+    col2.metric(
+        "평균 재구매율",
+        format_percent(month_avg_repurchase),
+        delta=f"{prev_repurchase_delta:.1f}%p" if prev_repurchase_delta is not None else None,
+    )
+    col3.metric("집계 주차", f"{len(month_df)}주")
+
+    chart_df = month_df.copy()
+    chart_df["첫구매전환율(%)"] = chart_df["첫구매전환율"] * 100
+    chart_df["재구매율(%)"] = chart_df["재구매율"] * 100
+
+    fig = px.line(
+        chart_df,
+        x="주차시작",
+        y=["첫구매전환율(%)", "재구매율(%)"],
+        markers=True,
+        title=f"{format_month_label(selected_month)} 주차별 전환·재구매 추이",
+        template="plotly_white",
+        labels={"value": "비율(%)", "variable": "지표"},
+    )
+    fig.update_layout(height=450, yaxis_title="비율(%)", hovermode="x unified")
+    st.plotly_chart(fig, width="stretch")
+
+    display_df = month_df.copy()
+    display_df["주차시작"] = display_df["주차시작"].dt.strftime("%Y-%m-%d")
+    display_df["첫구매전환율"] = display_df["첫구매전환율"].map(format_percent)
+    display_df["재구매율"] = display_df["재구매율"].map(format_percent)
+    st.dataframe(display_df, width="stretch", hide_index=True)
+
+
+def render_members_tab(members_df: pd.DataFrame) -> None:
+    months = sorted(members_df["년월"].unique(), reverse=True)
+    selected_month = st.selectbox(
+        "월 선택",
+        months,
+        format_func=format_month_label,
+        key="members_month",
+    )
+
+    month_df = members_df[members_df["년월"] == selected_month].copy()
+    latest_row = month_df.iloc[-1]
+    first_row = month_df.iloc[0]
+    new_members = latest_row["전체가입자"] - first_row["전체가입자"]
+
+    month_index = months.index(selected_month)
+    prev_member_delta = None
+    if month_index < len(months) - 1:
+        prev_month = months[month_index + 1]
+        prev_df = members_df[members_df["년월"] == prev_month]
+        if not prev_df.empty:
+            prev_member_delta = (
+                latest_row["전체가입자"] - prev_df.iloc[-1]["전체가입자"]
+            )
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric(
+        "누적 가입자",
+        f"{latest_row['전체가입자']:,.0f}명",
+        delta=f"{prev_member_delta:,.0f}명" if prev_member_delta is not None else None,
+    )
+    col2.metric("이번 달 신규", f"{new_members:,.0f}명")
+    col3.metric("전체 업체수", f"{latest_row['전체업체수']:,.0f}개")
+    col4.metric("업체당 평균", f"{latest_row['업체평균가입자']:.1f}명")
+
+    trend_df = month_df.copy()
+    trend_df["주간 신규 가입"] = trend_df["전체가입자"].diff()
+    prior_rows = members_df[members_df["주차시작"] < trend_df["주차시작"].min()]
+    if pd.isna(trend_df.iloc[0]["주간 신규 가입"]):
+        base_members = prior_rows.iloc[-1]["전체가입자"] if not prior_rows.empty else 0
+        trend_df.iloc[0, trend_df.columns.get_loc("주간 신규 가입")] = (
+            trend_df.iloc[0]["전체가입자"] - base_members
+        )
+
+    fig_total = px.line(
+        trend_df,
+        x="주차시작",
+        y="전체가입자",
+        markers=True,
+        title=f"{format_month_label(selected_month)} 누적 가입자 추이",
+        template="plotly_white",
+    )
+    fig_total.update_layout(height=400, yaxis_tickformat=",")
+    st.plotly_chart(fig_total, width="stretch")
+
+    fig_new = px.bar(
+        trend_df,
+        x="주차시작",
+        y="주간 신규 가입",
+        text="주간 신규 가입",
+        title=f"{format_month_label(selected_month)} 주간 신규 가입",
+        template="plotly_white",
+    )
+    fig_new.update_layout(height=350, yaxis_tickformat=",")
+    fig_new.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
+    st.plotly_chart(fig_new, width="stretch")
+
+    display_df = month_df.copy()
+    display_df["주차시작"] = display_df["주차시작"].dt.strftime("%Y-%m-%d")
+    display_df["전체가입자"] = display_df["전체가입자"].map(lambda x: f"{x:,.0f}")
+    display_df["전체업체수"] = display_df["전체업체수"].map(lambda x: f"{x:,.0f}")
+    display_df["업체평균가입자"] = display_df["업체평균가입자"].map(lambda x: f"{x:.1f}")
+    st.dataframe(display_df, width="stretch", hide_index=True)
 
 
 def render_sidebar(
@@ -368,13 +633,18 @@ st.divider()
 
 if "data_version" not in st.session_state:
     st.session_state.data_version = 0
+if "kpi_version" not in st.session_state:
+    st.session_state.kpi_version = 0
 
 file_bytes = get_active_file_bytes()
+monthly_bytes = get_monthly_kpi_bytes()
 df = None
 daily_sales = None
 daily_total_sales = None
 weekly_sales = None
 color_map = None
+conversion_df = None
+members_df = None
 
 if file_bytes is not None:
     try:
@@ -387,207 +657,255 @@ if file_bytes is not None:
         st.error(str(exc))
         st.stop()
     except Exception as exc:
-        st.error(f"데이터를 불러오지 못했습니다: {exc}")
+        st.error(f"매출 데이터를 불러오지 못했습니다: {exc}")
+        st.stop()
+
+if monthly_bytes is not None:
+    try:
+        conversion_df = load_monthly_conversion(
+            st.session_state.kpi_version,
+            monthly_bytes,
+        )
+        members_df = load_monthly_members(
+            st.session_state.kpi_version,
+            monthly_bytes,
+        )
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
+    except Exception as exc:
+        st.error(f"월간 KPI 데이터를 불러오지 못했습니다: {exc}")
         st.stop()
 
 selected_date = render_sidebar(df, daily_total_sales)
 
-if df is None:
-    st.warning("데이터 파일이 없습니다. 왼쪽 사이드바의 **데이터 업로드** 탭에서 엑셀 파일을 올려 주세요.")
+if df is None and conversion_df is None:
+    st.warning(
+        "데이터가 없습니다. 왼쪽 사이드바 **데이터 업로드** 탭에서 "
+        "`data.xlsx` 또는 `monthly_kpi.xlsx`를 올려 주세요."
+    )
     st.stop()
 
-if selected_date is None:
-    st.stop()
+caption_parts = []
+if df is not None and selected_date is not None:
+    latest_date = df["날짜"].max().strftime("%Y-%m-%d")
+    caption_parts.append(
+        f"매출 {len(df):,}행 · 최신 {latest_date} · 선택 {selected_date.strftime('%Y-%m-%d')}"
+    )
+if conversion_df is not None:
+    caption_parts.append(
+        f"월간 KPI {format_month_label(conversion_df['년월'].max())}까지"
+    )
+st.caption(" · ".join(caption_parts))
 
-latest_date = df["날짜"].max().strftime("%Y-%m-%d")
-st.caption(
-    f"현재 데이터: {len(df):,}행 · 최신 날짜 {latest_date} · "
-    f"선택 날짜 {selected_date.strftime('%Y-%m-%d')}"
-)
+selected_data = None
+if df is not None and selected_date is not None:
+    selected_data = daily_sales[daily_sales["날짜"] == selected_date]
+    selected_data = selected_data.sort_values("매출", ascending=False)
 
-selected_data = daily_sales[daily_sales["날짜"] == selected_date]
-selected_data = selected_data.sort_values("매출", ascending=False)
-
-tab_daily, tab_trend, tab_weekly = st.tabs(
-    ["일별 분석", "매출 추이", "주별 분석"]
+tab_daily, tab_trend, tab_weekly, tab_conversion, tab_members = st.tabs(
+    ["일별 분석", "매출 추이", "주별 분석", "전환·재구매", "가입자"]
 )
 
 with tab_daily:
-    st.subheader("일별 매출")
+    if selected_data is None:
+        st.info("매출 데이터(`data.xlsx`)를 업로드하면 일별 분석을 볼 수 있습니다.")
+    else:
+        st.subheader("일별 매출")
 
-    daily_chart_height = max(500, len(selected_data) * 40)
+        daily_chart_height = max(500, len(selected_data) * 40)
 
-    fig = px.bar(
-        selected_data,
-        x="상품",
-        y="매출",
-        color="분류",
-        color_discrete_map=color_map,
-        title=f"{selected_date.strftime('%Y-%m-%d')} 상품별 매출",
-        text="매출",
-        template="plotly_white",
-        category_orders={"상품": selected_data["상품"].tolist()},
-    )
+        fig = px.bar(
+            selected_data,
+            x="상품",
+            y="매출",
+            color="분류",
+            color_discrete_map=color_map,
+            title=f"{selected_date.strftime('%Y-%m-%d')} 상품별 매출",
+            text="매출",
+            template="plotly_white",
+            category_orders={"상품": selected_data["상품"].tolist()},
+        )
 
-    fig.update_layout(
-        height=daily_chart_height,
-        xaxis_tickangle=-30,
-        yaxis_tickformat=",",
-        showlegend=True,
-        xaxis=dict(tickfont=dict(size=18)),
-    )
-    fig.update_traces(
-        texttemplate="%{text:,.0f}",
-        textposition="outside",
-        textfont=dict(size=20),
-    )
+        fig.update_layout(
+            height=daily_chart_height,
+            xaxis_tickangle=-30,
+            yaxis_tickformat=",",
+            showlegend=True,
+            xaxis=dict(tickfont=dict(size=18)),
+        )
+        fig.update_traces(
+            texttemplate="%{text:,.0f}",
+            textposition="outside",
+            textfont=dict(size=20),
+        )
 
-    st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, width="stretch")
 
-    st.subheader("데이터")
-    display_df = selected_data.copy()
-    display_df["매출"] = format_sales_column(display_df["매출"])
-    st.dataframe(display_df, width="stretch")
+        st.subheader("데이터")
+        display_df = selected_data.copy()
+        display_df["매출"] = format_sales_column(display_df["매출"])
+        st.dataframe(display_df, width="stretch")
 
 with tab_trend:
-    st.subheader("일별 총 매출 추이")
+    if df is None:
+        st.info("매출 데이터(`data.xlsx`)를 업로드하면 매출 추이를 볼 수 있습니다.")
+    else:
+        st.subheader("일별 총 매출 추이")
 
-    fig_daily_line = px.line(
-        daily_total_sales,
-        x="날짜",
-        y="매출",
-        markers=True,
-        title="일별 총 매출 추이",
-        template="plotly_white",
-    )
-    fig_daily_line.update_layout(
-        height=500,
-        yaxis_tickformat=",",
-        hovermode="x unified",
-    )
-    fig_daily_line.update_traces(
-        text=daily_total_sales["매출"],
-        texttemplate="%{text:,.0f}",
-        textposition="top center",
-    )
-    st.plotly_chart(fig_daily_line, width="stretch")
+        fig_daily_line = px.line(
+            daily_total_sales,
+            x="날짜",
+            y="매출",
+            markers=True,
+            title="일별 총 매출 추이",
+            template="plotly_white",
+        )
+        fig_daily_line.update_layout(
+            height=500,
+            yaxis_tickformat=",",
+            hovermode="x unified",
+        )
+        fig_daily_line.update_traces(
+            text=daily_total_sales["매출"],
+            texttemplate="%{text:,.0f}",
+            textposition="top center",
+        )
+        st.plotly_chart(fig_daily_line, width="stretch")
 
-    st.subheader("주별 총 매출 추이")
+        st.subheader("주별 총 매출 추이")
 
-    fig_weekly = px.line(
-        weekly_sales,
-        x="주차",
-        y="매출",
-        markers=True,
-        title="주별 총 매출 추이",
-        template="plotly_white",
-    )
-    fig_weekly.update_layout(
-        height=500,
-        yaxis_tickformat=",",
-        hovermode="x unified",
-        xaxis_title="주차",
-        yaxis_title="총 매출",
-    )
-    fig_weekly.update_traces(
-        text=weekly_sales["매출"],
-        texttemplate="%{text:,.0f}",
-        textposition="top center",
-    )
-    st.plotly_chart(fig_weekly, width="stretch")
+        fig_weekly = px.line(
+            weekly_sales,
+            x="주차",
+            y="매출",
+            markers=True,
+            title="주별 총 매출 추이",
+            template="plotly_white",
+        )
+        fig_weekly.update_layout(
+            height=500,
+            yaxis_tickformat=",",
+            hovermode="x unified",
+            xaxis_title="주차",
+            yaxis_title="총 매출",
+        )
+        fig_weekly.update_traces(
+            text=weekly_sales["매출"],
+            texttemplate="%{text:,.0f}",
+            textposition="top center",
+        )
+        st.plotly_chart(fig_weekly, width="stretch")
 
 with tab_weekly:
-    st.subheader("주간 KPI")
+    if df is None:
+        st.info("매출 데이터(`data.xlsx`)를 업로드하면 주별 분석을 볼 수 있습니다.")
+    else:
+        st.subheader("주간 KPI")
 
-    latest_week = weekly_sales.iloc[-1]
-    change_rate = latest_week["증감률"]
+        latest_week = weekly_sales.iloc[-1]
+        change_rate = latest_week["증감률"]
 
-    col1, col2 = st.columns(2)
-    col1.metric("이번 주 매출", f"{latest_week['매출']:,.0f} 원")
-    col2.metric(
-        "전주 대비",
-        f"{change_rate:.1f}%" if not pd.isna(change_rate) else "-",
-        delta=f"{change_rate:.1f}%" if not pd.isna(change_rate) else None,
-    )
+        col1, col2 = st.columns(2)
+        col1.metric("이번 주 매출", f"{latest_week['매출']:,.0f} 원")
+        col2.metric(
+            "전주 대비",
+            f"{change_rate:.1f}%" if not pd.isna(change_rate) else "-",
+            delta=f"{change_rate:.1f}%" if not pd.isna(change_rate) else None,
+        )
 
-    st.subheader("주별 데이터")
+        st.subheader("주별 데이터")
 
-    weekly_display = weekly_sales.drop(columns=["주시작"]).copy()
-    weekly_display["매출"] = format_sales_column(weekly_display["매출"])
-    weekly_display["전주매출"] = weekly_display["전주매출"].map(
-        lambda x: "-" if pd.isna(x) else f"{x:,.0f}"
-    )
-    weekly_display["증감률"] = weekly_display["증감률"].map(
-        lambda x: "-" if pd.isna(x) else f"{x:.1f}%"
-    )
-    st.dataframe(weekly_display, width="stretch")
+        weekly_display = weekly_sales.drop(columns=["주시작"]).copy()
+        weekly_display["매출"] = format_sales_column(weekly_display["매출"])
+        weekly_display["전주매출"] = weekly_display["전주매출"].map(
+            lambda x: "-" if pd.isna(x) else f"{x:,.0f}"
+        )
+        weekly_display["증감률"] = weekly_display["증감률"].map(
+            lambda x: "-" if pd.isna(x) else f"{x:.1f}%"
+        )
+        st.dataframe(weekly_display, width="stretch")
 
-    st.subheader("주별 상품 상세 분석")
+        st.subheader("주별 상품 상세 분석")
 
-    week_options = weekly_sales["주차"].tolist()
-    selected_week = st.selectbox("주 선택", week_options)
+        week_options = weekly_sales["주차"].tolist()
+        selected_week = st.selectbox("주 선택", week_options)
 
-    weekly_detail = df[df["주차"] == selected_week]
-    weekly_product_sales = (
-        weekly_detail.groupby(["상품", "분류"])["매출"]
-        .sum()
-        .reset_index()
-        .sort_values("매출", ascending=True)
-        .reset_index(drop=True)
-    )
+        weekly_detail = df[df["주차"] == selected_week]
+        weekly_product_sales = (
+            weekly_detail.groupby(["상품", "분류"])["매출"]
+            .sum()
+            .reset_index()
+            .sort_values("매출", ascending=True)
+            .reset_index(drop=True)
+        )
 
-    week_product_count = len(weekly_product_sales)
-    top_n_week = st.slider(
-        "상위 N개 상품",
-        min_value=1,
-        max_value=week_product_count,
-        value=week_product_count,
-        key=f"weekly_top_n_{selected_week}",
-    )
+        week_product_count = len(weekly_product_sales)
+        top_n_week = st.slider(
+            "상위 N개 상품",
+            min_value=1,
+            max_value=week_product_count,
+            value=week_product_count,
+            key=f"weekly_top_n_{selected_week}",
+        )
 
-    weekly_chart_data = (
-        weekly_product_sales
-        .sort_values("매출", ascending=False)
-        .head(top_n_week)
-        .sort_values("매출", ascending=True)
-        .reset_index(drop=True)
-    )
+        weekly_chart_data = (
+            weekly_product_sales
+            .sort_values("매출", ascending=False)
+            .head(top_n_week)
+            .sort_values("매출", ascending=True)
+            .reset_index(drop=True)
+        )
 
-    chart_height = max(400, len(weekly_chart_data) * 35)
+        chart_height = max(400, len(weekly_chart_data) * 35)
 
-    fig_week_detail = px.bar(
-        weekly_chart_data,
-        y="상품",
-        x="매출",
-        color="분류",
-        color_discrete_map=color_map,
-        text="매출",
-        title=(
-            f"{selected_week} 상품별 매출 "
-            f"(상위 {top_n_week}개 / 전체 {week_product_count}개)"
-        ),
-        template="plotly_white",
-        orientation="h",
-        category_orders={"상품": weekly_chart_data["상품"].tolist()},
-    )
-    fig_week_detail.update_layout(
-        height=chart_height,
-        xaxis_tickformat=",",
-        showlegend=True,
-        margin=dict(l=350, r=50, t=80, b=50),
-        yaxis=dict(tickfont=dict(size=16)),
-        xaxis=dict(tickfont=dict(size=14)),
-    )
-    fig_week_detail.update_traces(
-        texttemplate="%{text:,.0f}",
-        textposition="outside",
-        textfont=dict(size=16),
-    )
-    st.plotly_chart(fig_week_detail, width="stretch")
+        fig_week_detail = px.bar(
+            weekly_chart_data,
+            y="상품",
+            x="매출",
+            color="분류",
+            color_discrete_map=color_map,
+            text="매출",
+            title=(
+                f"{selected_week} 상품별 매출 "
+                f"(상위 {top_n_week}개 / 전체 {week_product_count}개)"
+            ),
+            template="plotly_white",
+            orientation="h",
+            category_orders={"상품": weekly_chart_data["상품"].tolist()},
+        )
+        fig_week_detail.update_layout(
+            height=chart_height,
+            xaxis_tickformat=",",
+            showlegend=True,
+            margin=dict(l=350, r=50, t=80, b=50),
+            yaxis=dict(tickfont=dict(size=16)),
+            xaxis=dict(tickfont=dict(size=14)),
+        )
+        fig_week_detail.update_traces(
+            texttemplate="%{text:,.0f}",
+            textposition="outside",
+            textfont=dict(size=16),
+        )
+        st.plotly_chart(fig_week_detail, width="stretch")
 
-    st.subheader("주별 상품 데이터")
-    weekly_display_detail = weekly_chart_data.copy()
-    weekly_display_detail["매출"] = format_sales_column(
-        weekly_display_detail["매출"]
-    )
-    st.dataframe(weekly_display_detail, width="stretch")
+        st.subheader("주별 상품 데이터")
+        weekly_display_detail = weekly_chart_data.copy()
+        weekly_display_detail["매출"] = format_sales_column(
+            weekly_display_detail["매출"]
+        )
+        st.dataframe(weekly_display_detail, width="stretch")
+
+with tab_conversion:
+    if conversion_df is None:
+        st.info("월간 KPI(`monthly_kpi.xlsx`)를 업로드하면 전환·재구매 분석을 볼 수 있습니다.")
+    else:
+        st.subheader("구매전환율 · 재구매율")
+        render_conversion_tab(conversion_df)
+
+with tab_members:
+    if members_df is None:
+        st.info("월간 KPI(`monthly_kpi.xlsx`)를 업로드하면 가입자 분석을 볼 수 있습니다.")
+    else:
+        st.subheader("가입자 추이")
+        render_members_tab(members_df)
