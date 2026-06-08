@@ -49,6 +49,7 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         + " ~ "
         + df["주종료"].dt.strftime("%Y-%m-%d")
     )
+    df["년월"] = df["날짜"].dt.to_period("M").astype(str)
 
     return df.reset_index(drop=True)
 
@@ -596,6 +597,159 @@ def get_weekly_sales(df: pd.DataFrame) -> pd.DataFrame:
     return weekly_sales
 
 
+@st.cache_data
+def get_monthly_sales(df: pd.DataFrame) -> pd.DataFrame:
+    monthly_sales = (
+        df.groupby("년월")["매출"]
+        .sum()
+        .reset_index()
+        .sort_values("년월")
+        .reset_index(drop=True)
+    )
+
+    monthly_sales["전월매출"] = monthly_sales["매출"].shift(1)
+    monthly_sales["증감률"] = (
+        (monthly_sales["매출"] - monthly_sales["전월매출"])
+        / monthly_sales["전월매출"]
+    ) * 100
+
+    return monthly_sales
+
+
+def render_monthly_tab(
+    df: pd.DataFrame,
+    monthly_sales: pd.DataFrame,
+    color_map: dict,
+) -> None:
+    months = monthly_sales["년월"].tolist()
+    selected_month = st.selectbox(
+        "월 선택",
+        months,
+        index=len(months) - 1,
+        format_func=format_month_label,
+        key="sales_month",
+    )
+
+    month_row = monthly_sales[monthly_sales["년월"] == selected_month].iloc[0]
+    change_rate = month_row["증감률"]
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric(
+        f"{format_month_label(selected_month)} 매출",
+        f"{month_row['매출']:,.0f} 원",
+    )
+    col2.metric(
+        "전월 대비",
+        f"{change_rate:.1f}%" if not pd.isna(change_rate) else "-",
+        delta=f"{change_rate:.1f}%" if not pd.isna(change_rate) else None,
+    )
+    month_days = df[df["년월"] == selected_month]["날짜"].nunique()
+    col3.metric("영업일 수", f"{month_days}일")
+
+    st.subheader("월별 데이터")
+
+    monthly_display = monthly_sales.copy()
+    monthly_display["년월"] = monthly_display["년월"].map(format_month_label)
+    monthly_display["매출"] = format_sales_column(monthly_display["매출"])
+    monthly_display["전월매출"] = monthly_display["전월매출"].map(
+        lambda x: "-" if pd.isna(x) else f"{x:,.0f}"
+    )
+    monthly_display["증감률"] = monthly_display["증감률"].map(
+        lambda x: "-" if pd.isna(x) else f"{x:.1f}%"
+    )
+    st.dataframe(monthly_display, width="stretch", hide_index=True)
+
+    fig_monthly = px.bar(
+        monthly_sales,
+        x="년월",
+        y="매출",
+        text="매출",
+        title="월별 총 매출",
+        template="plotly_white",
+    )
+    fig_monthly.update_layout(
+        height=400,
+        yaxis_tickformat=",",
+        xaxis_tickformat="%Y-%m",
+    )
+    fig_monthly.update_traces(
+        texttemplate="%{text:,.0f}",
+        textposition="outside",
+    )
+    fig_monthly.update_xaxes(
+        tickvals=monthly_sales["년월"],
+        ticktext=[format_month_label(month) for month in monthly_sales["년월"]],
+    )
+    st.plotly_chart(fig_monthly, width="stretch")
+
+    st.subheader("월별 상품 상세 분석")
+
+    monthly_detail = df[df["년월"] == selected_month]
+    monthly_product_sales = (
+        monthly_detail.groupby(["상품", "분류"])["매출"]
+        .sum()
+        .reset_index()
+        .sort_values("매출", ascending=True)
+        .reset_index(drop=True)
+    )
+
+    month_product_count = len(monthly_product_sales)
+    top_n_month = st.slider(
+        "상위 N개 상품",
+        min_value=1,
+        max_value=month_product_count,
+        value=min(20, month_product_count),
+        key=f"monthly_top_n_{selected_month}",
+    )
+
+    monthly_chart_data = (
+        monthly_product_sales
+        .sort_values("매출", ascending=False)
+        .head(top_n_month)
+        .sort_values("매출", ascending=True)
+        .reset_index(drop=True)
+    )
+
+    chart_height = max(400, len(monthly_chart_data) * 35)
+
+    fig_month_detail = px.bar(
+        monthly_chart_data,
+        y="상품",
+        x="매출",
+        color="분류",
+        color_discrete_map=color_map,
+        text="매출",
+        title=(
+            f"{format_month_label(selected_month)} 상품별 매출 "
+            f"(상위 {top_n_month}개 / 전체 {month_product_count}개)"
+        ),
+        template="plotly_white",
+        orientation="h",
+        category_orders={"상품": monthly_chart_data["상품"].tolist()},
+    )
+    fig_month_detail.update_layout(
+        height=chart_height,
+        xaxis_tickformat=",",
+        showlegend=True,
+        margin=dict(l=350, r=50, t=80, b=50),
+        yaxis=dict(tickfont=dict(size=16)),
+        xaxis=dict(tickfont=dict(size=14)),
+    )
+    fig_month_detail.update_traces(
+        texttemplate="%{text:,.0f}",
+        textposition="outside",
+        textfont=dict(size=16),
+    )
+    st.plotly_chart(fig_month_detail, width="stretch")
+
+    st.subheader("월별 상품 데이터")
+    monthly_display_detail = monthly_chart_data.copy()
+    monthly_display_detail["매출"] = format_sales_column(
+        monthly_display_detail["매출"]
+    )
+    st.dataframe(monthly_display_detail, width="stretch", hide_index=True)
+
+
 def build_color_map(categories) -> dict:
     colors = px.colors.qualitative.G10
     return {
@@ -620,7 +774,7 @@ st.markdown(
     </h1>
 
     <p style='font-size:22px; color:gray;'>
-        일별 / 주별 상품 매출 분석 시스템
+        일별 / 주별 / 월별 상품 매출 분석 시스템
     </p>
     """,
     unsafe_allow_html=True,
@@ -642,6 +796,7 @@ df = None
 daily_sales = None
 daily_total_sales = None
 weekly_sales = None
+monthly_sales = None
 color_map = None
 conversion_df = None
 members_df = None
@@ -652,6 +807,7 @@ if file_bytes is not None:
         daily_sales = get_daily_sales(df)
         daily_total_sales = get_daily_total_sales(df)
         weekly_sales = get_weekly_sales(df)
+        monthly_sales = get_monthly_sales(df)
         color_map = build_color_map(df["분류"].unique())
     except ValueError as exc:
         st.error(str(exc))
@@ -703,8 +859,8 @@ if df is not None and selected_date is not None:
     selected_data = daily_sales[daily_sales["날짜"] == selected_date]
     selected_data = selected_data.sort_values("매출", ascending=False)
 
-tab_daily, tab_trend, tab_weekly, tab_conversion, tab_members = st.tabs(
-    ["일별 분석", "매출 추이", "주별 분석", "전환·재구매", "가입자"]
+tab_daily, tab_trend, tab_weekly, tab_monthly, tab_conversion, tab_members = st.tabs(
+    ["일별 분석", "매출 추이", "주별 분석", "월별 분석", "전환·재구매", "가입자"]
 )
 
 with tab_daily:
@@ -796,6 +952,34 @@ with tab_trend:
             textposition="top center",
         )
         st.plotly_chart(fig_weekly, width="stretch")
+
+        st.subheader("월별 총 매출 추이")
+
+        fig_monthly_line = px.line(
+            monthly_sales,
+            x="년월",
+            y="매출",
+            markers=True,
+            title="월별 총 매출 추이",
+            template="plotly_white",
+        )
+        fig_monthly_line.update_layout(
+            height=450,
+            yaxis_tickformat=",",
+            hovermode="x unified",
+            xaxis_title="월",
+            yaxis_title="총 매출",
+        )
+        fig_monthly_line.update_xaxes(
+            tickvals=monthly_sales["년월"],
+            ticktext=[format_month_label(month) for month in monthly_sales["년월"]],
+        )
+        fig_monthly_line.update_traces(
+            text=monthly_sales["매출"],
+            texttemplate="%{text:,.0f}",
+            textposition="top center",
+        )
+        st.plotly_chart(fig_monthly_line, width="stretch")
 
 with tab_weekly:
     if df is None:
@@ -895,6 +1079,13 @@ with tab_weekly:
             weekly_display_detail["매출"]
         )
         st.dataframe(weekly_display_detail, width="stretch")
+
+with tab_monthly:
+    if df is None:
+        st.info("매출 데이터(`data.xlsx`)를 업로드하면 월별 분석을 볼 수 있습니다.")
+    else:
+        st.subheader("월간 KPI")
+        render_monthly_tab(df, monthly_sales, color_map)
 
 with tab_conversion:
     if conversion_df is None:
