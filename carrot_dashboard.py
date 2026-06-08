@@ -848,8 +848,8 @@ if df is not None and selected_date is not None:
     selected_data = daily_sales[daily_sales["날짜"] == selected_date]
     selected_data = selected_data.sort_values("매출", ascending=False)
 
-tab_daily, tab_trend, tab_weekly, tab_monthly, tab_conversion, tab_members = st.tabs(
-    ["일별 분석", "매출 추이", "주별 분석", "월별 분석", "전환·재구매", "가입자"]
+tab_daily, tab_weekly, tab_monthly, tab_trend, tab_conversion, tab_members = st.tabs(
+    ["일별 분석", "주별 분석", "월별 분석", "매출 추이", "전환·재구매", "가입자"]
 )
 
 with tab_daily:
@@ -891,84 +891,6 @@ with tab_daily:
         display_df = selected_data.copy()
         display_df["매출"] = format_sales_column(display_df["매출"])
         st.dataframe(display_df, width="stretch")
-
-with tab_trend:
-    if df is None:
-        st.info("매출 데이터(`data.xlsx`)를 업로드하면 매출 추이를 볼 수 있습니다.")
-    else:
-        st.subheader("일별 총 매출 추이")
-
-        fig_daily_line = px.line(
-            daily_total_sales,
-            x="날짜",
-            y="매출",
-            markers=True,
-            title="일별 총 매출 추이",
-            template="plotly_white",
-        )
-        fig_daily_line.update_layout(
-            height=500,
-            yaxis_tickformat=",",
-            hovermode="x unified",
-        )
-        fig_daily_line.update_traces(
-            text=daily_total_sales["매출"],
-            texttemplate="%{text:,.0f}",
-            textposition="top center",
-        )
-        st.plotly_chart(fig_daily_line, width="stretch")
-
-        st.subheader("주별 총 매출 추이")
-
-        fig_weekly = px.line(
-            weekly_sales,
-            x="주차",
-            y="매출",
-            markers=True,
-            title="주별 총 매출 추이",
-            template="plotly_white",
-        )
-        fig_weekly.update_layout(
-            height=500,
-            yaxis_tickformat=",",
-            hovermode="x unified",
-            xaxis_title="주차",
-            yaxis_title="총 매출",
-        )
-        fig_weekly.update_traces(
-            text=weekly_sales["매출"],
-            texttemplate="%{text:,.0f}",
-            textposition="top center",
-        )
-        st.plotly_chart(fig_weekly, width="stretch")
-
-        st.subheader("월별 총 매출 추이")
-
-        fig_monthly_line = px.line(
-            monthly_sales,
-            x="년월",
-            y="매출",
-            markers=True,
-            title="월별 총 매출 추이",
-            template="plotly_white",
-        )
-        fig_monthly_line.update_layout(
-            height=450,
-            yaxis_tickformat=",",
-            hovermode="x unified",
-            xaxis_title="월",
-            yaxis_title="총 매출",
-        )
-        fig_monthly_line.update_xaxes(
-            tickvals=monthly_sales["년월"],
-            ticktext=[format_month_label(month) for month in monthly_sales["년월"]],
-        )
-        fig_monthly_line.update_traces(
-            text=monthly_sales["매출"],
-            texttemplate="%{text:,.0f}",
-            textposition="top center",
-        )
-        st.plotly_chart(fig_monthly_line, width="stretch")
 
 with tab_weekly:
     if df is None:
@@ -1075,6 +997,84 @@ with tab_monthly:
     else:
         st.subheader("월간 KPI")
         render_monthly_tab(df, monthly_sales, color_map)
+
+with tab_trend:
+    if df is None:
+        st.info("매출 데이터(`data.xlsx`)를 업로드하면 매출 추이를 볼 수 있습니다.")
+    else:
+        st.subheader("일별 총 매출 추이")
+
+        fig_daily_line = px.line(
+            daily_total_sales,
+            x="날짜",
+            y="매출",
+            markers=True,
+            title="일별 총 매출 추이",
+            template="plotly_white",
+        )
+        fig_daily_line.update_layout(
+            height=500,
+            yaxis_tickformat=",",
+            hovermode="x unified",
+        )
+        fig_daily_line.update_traces(
+            text=daily_total_sales["매출"],
+            texttemplate="%{text:,.0f}",
+            textposition="top center",
+        )
+        st.plotly_chart(fig_daily_line, width="stretch")
+
+        st.subheader("주별 총 매출 추이")
+
+        fig_weekly = px.line(
+            weekly_sales,
+            x="주차",
+            y="매출",
+            markers=True,
+            title="주별 총 매출 추이",
+            template="plotly_white",
+        )
+        fig_weekly.update_layout(
+            height=500,
+            yaxis_tickformat=",",
+            hovermode="x unified",
+            xaxis_title="주차",
+            yaxis_title="총 매출",
+        )
+        fig_weekly.update_traces(
+            text=weekly_sales["매출"],
+            texttemplate="%{text:,.0f}",
+            textposition="top center",
+        )
+        st.plotly_chart(fig_weekly, width="stretch")
+
+        st.subheader("월별 총 매출 추이")
+
+        fig_monthly_line = px.line(
+            monthly_sales,
+            x="년월",
+            y="매출",
+            markers=True,
+            title="월별 총 매출 추이",
+            template="plotly_white",
+        )
+        fig_monthly_line.update_layout(
+            height=450,
+            yaxis_tickformat=",",
+            hovermode="x unified",
+            xaxis_title="월",
+            yaxis_title="총 매출",
+        )
+        fig_monthly_line.update_xaxes(
+            tickvals=monthly_sales["년월"],
+            ticktext=[format_month_label(month) for month in monthly_sales["년월"]],
+        )
+        fig_monthly_line.update_traces(
+            text=monthly_sales["매출"],
+            texttemplate="%{text:,.0f}",
+            textposition="top center",
+        )
+        st.plotly_chart(fig_monthly_line, width="stretch")
 
 with tab_conversion:
     if conversion_df is None:
