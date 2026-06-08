@@ -12,6 +12,8 @@ import streamlit as st
 DATA_PATH = "data.xlsx"
 REQUIRED_COLUMNS = ["날짜", "상품", "매출", "분류"]
 DEFAULT_GITHUB_REPO = "jinyeong617/carrot-dashboard"
+RECENT_DATE_LIMIT = 20
+WEEKDAYS_KR = ["월", "화", "수", "목", "금", "토", "일"]
 
 
 def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -116,39 +118,139 @@ def get_active_file_bytes() -> bytes | None:
     return None
 
 
-def render_upload_section() -> None:
-    st.sidebar.header("데이터 업로드")
-    st.sidebar.caption(
-        "매일 최신 `data.xlsx` 파일을 업로드하세요. "
-        "컬럼: 날짜, 상품, 분류, 매출"
+def format_date_label(date_value: pd.Timestamp) -> str:
+    weekday = WEEKDAYS_KR[date_value.weekday()]
+    return f"{date_value.strftime('%Y-%m-%d')} ({weekday})"
+
+
+def ensure_selected_date(all_dates: list[pd.Timestamp]) -> None:
+    latest = all_dates[0].strftime("%Y-%m-%d")
+    valid_dates = {date.strftime("%Y-%m-%d") for date in all_dates}
+
+    if "selected_date_str" not in st.session_state:
+        st.session_state.selected_date_str = latest
+    elif st.session_state.selected_date_str not in valid_dates:
+        st.session_state.selected_date_str = latest
+
+
+def render_date_panel(
+    df: pd.DataFrame,
+    daily_total_sales: pd.DataFrame,
+) -> pd.Timestamp:
+    all_dates = sorted(df["날짜"].drop_duplicates(), reverse=True)
+    recent_dates = all_dates[:RECENT_DATE_LIMIT]
+    all_date_values = [date.strftime("%Y-%m-%d") for date in all_dates]
+    recent_date_values = [date.strftime("%Y-%m-%d") for date in recent_dates]
+
+    ensure_selected_date(all_dates)
+    selected_value = st.session_state.selected_date_str
+
+    latest_date = all_dates[0]
+    st.caption(
+        f"총 {len(all_dates)}일 · 최신 {format_date_label(latest_date)}"
     )
 
-    uploaded = st.sidebar.file_uploader(
+    selected_dt = pd.to_datetime(selected_value)
+    selected_sales = daily_total_sales.loc[
+        daily_total_sales["날짜"] == selected_dt,
+        "매출",
+    ]
+    if not selected_sales.empty:
+        st.metric("선택한 날짜 매출", f"{selected_sales.iloc[0]:,.0f} 원")
+
+    default_mode = (
+        1 if selected_value not in recent_date_values else 0
+    )
+    date_mode = st.radio(
+        "선택 방식",
+        ["최근 20일", "전체 날짜"],
+        index=default_mode,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    if date_mode == "최근 20일":
+        st.caption("가장 최근 영업일을 빠르게 선택하세요.")
+        recent_index = (
+            recent_date_values.index(selected_value)
+            if selected_value in recent_date_values
+            else 0
+        )
+        st.session_state.selected_date_str = st.radio(
+            "최근 20일",
+            recent_date_values,
+            index=recent_index,
+            format_func=lambda value: format_date_label(pd.to_datetime(value)),
+            label_visibility="collapsed",
+        )
+    else:
+        st.caption("과거 날짜를 검색해 선택하세요.")
+        all_index = (
+            all_date_values.index(selected_value)
+            if selected_value in all_date_values
+            else 0
+        )
+        st.session_state.selected_date_str = st.selectbox(
+            "전체 날짜",
+            all_date_values,
+            index=all_index,
+            format_func=lambda value: format_date_label(pd.to_datetime(value)),
+            label_visibility="collapsed",
+        )
+
+    return pd.to_datetime(st.session_state.selected_date_str)
+
+
+def render_upload_panel() -> None:
+    st.markdown("#### 매출 데이터 업로드")
+    st.caption("기존 `data.xlsx` 전체 파일을 올려 주세요.")
+
+    with st.container(border=True):
+        st.markdown("**업로드 방법**")
+        st.markdown(
+            "1. 엑셀에서 오늘 데이터를 추가한 뒤 저장\n"
+            "2. 아래에서 파일 선택\n"
+            "3. **대시보드에 적용** 클릭"
+        )
+        st.markdown(
+            "<span style='color:#6c757d; font-size:0.9rem;'>"
+            "필수 컬럼: 날짜 · 상품 · 분류 · 매출"
+            "</span>",
+            unsafe_allow_html=True,
+        )
+
+    uploaded = st.file_uploader(
         "엑셀 파일 선택",
         type=["xlsx"],
-        help="기존 data.xlsx 전체 파일을 업로드하면 됩니다.",
+        help="당일 데이터만이 아니라, 누적된 전체 data.xlsx를 업로드하세요.",
+        label_visibility="collapsed",
     )
 
     if uploaded is None:
+        st.info("아직 선택된 파일이 없습니다.")
         return
 
     file_bytes = uploaded.getvalue()
     try:
         preview_df = prepare_dataframe(pd.read_excel(io.BytesIO(file_bytes)))
     except ValueError as exc:
-        st.sidebar.error(str(exc))
+        st.error(str(exc))
         return
     except Exception as exc:
-        st.sidebar.error(f"엑셀 파일을 읽을 수 없습니다: {exc}")
+        st.error(f"엑셀 파일을 읽을 수 없습니다: {exc}")
         return
 
-    last_date = preview_df["날짜"].max().strftime("%Y-%m-%d")
-    st.sidebar.success(
-        f"파일 확인 완료: {len(preview_df):,}행, "
-        f"최신 날짜 {last_date}"
+    last_date = preview_df["날짜"].max()
+    first_date = preview_df["날짜"].min()
+    preview_col1, preview_col2 = st.columns(2)
+    preview_col1.metric("데이터 행 수", f"{len(preview_df):,}")
+    preview_col2.metric("기간", f"{first_date.strftime('%m/%d')}~{last_date.strftime('%m/%d')}")
+
+    st.success(
+        f"파일 확인 완료 · 최신 날짜 {format_date_label(last_date)}"
     )
 
-    if st.sidebar.button("대시보드에 적용", type="primary", width="stretch"):
+    if st.button("대시보드에 적용", type="primary", width="stretch"):
         st.session_state.uploaded_data = file_bytes
         st.session_state.data_version = (
             st.session_state.get("data_version", 0) + 1
@@ -162,19 +264,38 @@ def render_upload_section() -> None:
         if github_token_configured():
             saved, message = save_to_github(file_bytes)
             if saved:
-                st.sidebar.success(message)
+                st.success(message)
             else:
-                st.sidebar.warning(
-                    f"{message} 이번 접속 동안만 반영됩니다."
-                )
+                st.warning(f"{message} 이번 접속 동안만 반영됩니다.")
         else:
-            st.sidebar.info(
+            st.info(
                 "이번 접속에 적용되었습니다. "
                 "Streamlit Cloud에서 영구 저장하려면 GitHub 토큰 설정이 필요합니다."
             )
 
         load_and_prepare_data.clear()
         st.rerun()
+
+
+def render_sidebar(
+    df: pd.DataFrame | None,
+    daily_total_sales: pd.DataFrame | None,
+) -> pd.Timestamp | None:
+    st.sidebar.markdown("### 🥕 당근 매출")
+    st.sidebar.caption("날짜를 고르거나 데이터를 업로드하세요.")
+
+    tab_date, tab_upload = st.sidebar.tabs(["📅 날짜 선택", "📤 데이터 업로드"])
+
+    with tab_upload:
+        render_upload_panel()
+
+    with tab_date:
+        if df is None or daily_total_sales is None:
+            st.info("데이터를 먼저 업로드해 주세요.")
+            return None
+        return render_date_panel(df, daily_total_sales)
+
+    return None
 
 
 @st.cache_data
@@ -248,41 +369,41 @@ st.divider()
 if "data_version" not in st.session_state:
     st.session_state.data_version = 0
 
-render_upload_section()
-
 file_bytes = get_active_file_bytes()
-if file_bytes is None:
-    st.warning("데이터 파일이 없습니다. 왼쪽 사이드바에서 엑셀 파일을 업로드해 주세요.")
+df = None
+daily_sales = None
+daily_total_sales = None
+weekly_sales = None
+color_map = None
+
+if file_bytes is not None:
+    try:
+        df = load_and_prepare_data(st.session_state.data_version, file_bytes)
+        daily_sales = get_daily_sales(df)
+        daily_total_sales = get_daily_total_sales(df)
+        weekly_sales = get_weekly_sales(df)
+        color_map = build_color_map(df["분류"].unique())
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
+    except Exception as exc:
+        st.error(f"데이터를 불러오지 못했습니다: {exc}")
+        st.stop()
+
+selected_date = render_sidebar(df, daily_total_sales)
+
+if df is None:
+    st.warning("데이터 파일이 없습니다. 왼쪽 사이드바의 **데이터 업로드** 탭에서 엑셀 파일을 올려 주세요.")
     st.stop()
 
-try:
-    df = load_and_prepare_data(st.session_state.data_version, file_bytes)
-except ValueError as exc:
-    st.error(str(exc))
+if selected_date is None:
     st.stop()
-except Exception as exc:
-    st.error(f"데이터를 불러오지 못했습니다: {exc}")
-    st.stop()
-
-daily_sales = get_daily_sales(df)
-daily_total_sales = get_daily_total_sales(df)
-weekly_sales = get_weekly_sales(df)
-color_map = build_color_map(df["분류"].unique())
-
-date_list = (
-    daily_sales["날짜"]
-    .drop_duplicates()
-    .sort_values(ascending=False)
-    .head(20)
-)
-date_options = [d.strftime("%Y-%m-%d") for d in date_list]
 
 latest_date = df["날짜"].max().strftime("%Y-%m-%d")
-st.caption(f"현재 데이터: {len(df):,}행 · 최신 날짜 {latest_date}")
-
-st.sidebar.header("필터")
-selected_date = st.sidebar.radio("날짜 선택", date_options)
-selected_date = pd.to_datetime(selected_date)
+st.caption(
+    f"현재 데이터: {len(df):,}행 · 최신 날짜 {latest_date} · "
+    f"선택 날짜 {selected_date.strftime('%Y-%m-%d')}"
+)
 
 selected_data = daily_sales[daily_sales["날짜"] == selected_date]
 selected_data = selected_data.sort_values("매출", ascending=False)
