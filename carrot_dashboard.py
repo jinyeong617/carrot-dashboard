@@ -483,21 +483,10 @@ def render_members_tab(members_df: pd.DataFrame) -> None:
     first_row = month_df.iloc[0]
     new_members = latest_row["전체가입자"] - first_row["전체가입자"]
 
-    month_index = months.index(selected_month)
-    prev_member_delta = None
-    if month_index < len(months) - 1:
-        prev_month = months[month_index + 1]
-        prev_df = members_df[members_df["년월"] == prev_month]
-        if not prev_df.empty:
-            prev_member_delta = (
-                latest_row["전체가입자"] - prev_df.iloc[-1]["전체가입자"]
-            )
-
     col1, col2, col3, col4 = st.columns(4)
     col1.metric(
         "누적 가입자",
         f"{latest_row['전체가입자']:,.0f}명",
-        delta=f"{prev_member_delta:,.0f}명" if prev_member_delta is not None else None,
     )
     col2.metric("이번 달 신규", f"{new_members:,.0f}명")
     col3.metric("전체 업체수", f"{latest_row['전체업체수']:,.0f}개")
