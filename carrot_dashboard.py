@@ -1,3 +1,8 @@
+import base64
+import io
+import json
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pandas as pd
@@ -6,12 +11,10 @@ import streamlit as st
 
 DATA_PATH = "data.xlsx"
 REQUIRED_COLUMNS = ["날짜", "상품", "매출", "분류"]
+DEFAULT_GITHUB_REPO = "jinyeong617/carrot-dashboard"
 
 
-@st.cache_data
-def load_and_prepare_data(path: str) -> pd.DataFrame:
-    df = pd.read_excel(path)
-
+def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
     if missing:
         raise ValueError(f"필수 컬럼이 없습니다: {', '.join(missing)}")
@@ -43,6 +46,135 @@ def load_and_prepare_data(path: str) -> pd.DataFrame:
     )
 
     return df.reset_index(drop=True)
+
+
+@st.cache_data
+def load_and_prepare_data(data_version: int, file_bytes: bytes) -> pd.DataFrame:
+    df = pd.read_excel(io.BytesIO(file_bytes))
+    return prepare_dataframe(df)
+
+
+def github_token_configured() -> bool:
+    try:
+        return bool(st.secrets.get("GITHUB_TOKEN"))
+    except (KeyError, FileNotFoundError):
+        return False
+
+
+def save_to_github(file_bytes: bytes) -> tuple[bool, str]:
+    try:
+        token = st.secrets["GITHUB_TOKEN"]
+        repo = st.secrets.get("GITHUB_REPO", DEFAULT_GITHUB_REPO)
+    except (KeyError, FileNotFoundError):
+        return False, "GitHub 토큰이 설정되지 않았습니다."
+
+    api_url = f"https://api.github.com/repos/{repo}/contents/{DATA_PATH}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "carrot-dashboard",
+    }
+
+    sha = None
+    request = urllib.request.Request(api_url, headers=headers)
+    try:
+        with urllib.request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            sha = payload.get("sha")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            return False, f"GitHub 조회 실패: {exc.reason}"
+
+    body = {
+        "message": "대시보드에서 data.xlsx 업데이트",
+        "content": base64.b64encode(file_bytes).decode("ascii"),
+    }
+    if sha:
+        body["sha"] = sha
+
+    upload = urllib.request.Request(
+        api_url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={**headers, "Content-Type": "application/json"},
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(upload) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        return False, f"GitHub 저장 실패: {exc.reason} ({details})"
+
+    return True, "GitHub에 저장되었습니다. 앱이 재시작되어도 데이터가 유지됩니다."
+
+
+def get_active_file_bytes() -> bytes | None:
+    if st.session_state.get("uploaded_data"):
+        return st.session_state.uploaded_data
+    if Path(DATA_PATH).exists():
+        return Path(DATA_PATH).read_bytes()
+    return None
+
+
+def render_upload_section() -> None:
+    st.sidebar.header("데이터 업로드")
+    st.sidebar.caption(
+        "매일 최신 `data.xlsx` 파일을 업로드하세요. "
+        "컬럼: 날짜, 상품, 분류, 매출"
+    )
+
+    uploaded = st.sidebar.file_uploader(
+        "엑셀 파일 선택",
+        type=["xlsx"],
+        help="기존 data.xlsx 전체 파일을 업로드하면 됩니다.",
+    )
+
+    if uploaded is None:
+        return
+
+    file_bytes = uploaded.getvalue()
+    try:
+        preview_df = prepare_dataframe(pd.read_excel(io.BytesIO(file_bytes)))
+    except ValueError as exc:
+        st.sidebar.error(str(exc))
+        return
+    except Exception as exc:
+        st.sidebar.error(f"엑셀 파일을 읽을 수 없습니다: {exc}")
+        return
+
+    last_date = preview_df["날짜"].max().strftime("%Y-%m-%d")
+    st.sidebar.success(
+        f"파일 확인 완료: {len(preview_df):,}행, "
+        f"최신 날짜 {last_date}"
+    )
+
+    if st.sidebar.button("대시보드에 적용", type="primary", width="stretch"):
+        st.session_state.uploaded_data = file_bytes
+        st.session_state.data_version = (
+            st.session_state.get("data_version", 0) + 1
+        )
+
+        try:
+            Path(DATA_PATH).write_bytes(file_bytes)
+        except OSError:
+            pass
+
+        if github_token_configured():
+            saved, message = save_to_github(file_bytes)
+            if saved:
+                st.sidebar.success(message)
+            else:
+                st.sidebar.warning(
+                    f"{message} 이번 접속 동안만 반영됩니다."
+                )
+        else:
+            st.sidebar.info(
+                "이번 접속에 적용되었습니다. "
+                "Streamlit Cloud에서 영구 저장하려면 GitHub 토큰 설정이 필요합니다."
+            )
+
+        load_and_prepare_data.clear()
+        st.rerun()
 
 
 @st.cache_data
@@ -113,14 +245,23 @@ if Path("logo.png").exists():
 
 st.divider()
 
-if not Path(DATA_PATH).exists():
-    st.error(f"{DATA_PATH} 파일을 찾을 수 없습니다.")
+if "data_version" not in st.session_state:
+    st.session_state.data_version = 0
+
+render_upload_section()
+
+file_bytes = get_active_file_bytes()
+if file_bytes is None:
+    st.warning("데이터 파일이 없습니다. 왼쪽 사이드바에서 엑셀 파일을 업로드해 주세요.")
     st.stop()
 
 try:
-    df = load_and_prepare_data(DATA_PATH)
+    df = load_and_prepare_data(st.session_state.data_version, file_bytes)
 except ValueError as exc:
     st.error(str(exc))
+    st.stop()
+except Exception as exc:
+    st.error(f"데이터를 불러오지 못했습니다: {exc}")
     st.stop()
 
 daily_sales = get_daily_sales(df)
@@ -135,6 +276,9 @@ date_list = (
     .head(20)
 )
 date_options = [d.strftime("%Y-%m-%d") for d in date_list]
+
+latest_date = df["날짜"].max().strftime("%Y-%m-%d")
+st.caption(f"현재 데이터: {len(df):,}행 · 최신 날짜 {latest_date}")
 
 st.sidebar.header("필터")
 selected_date = st.sidebar.radio("날짜 선택", date_options)
