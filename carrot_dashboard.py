@@ -415,6 +415,13 @@ def render_conversion_tab(conversion_df: pd.DataFrame) -> None:
         key="conversion_month",
     )
 
+    with st.container(border=True):
+        st.markdown("**지표 설명**")
+        st.markdown(
+            "- **첫구매 전환율**: 가입 후 **7일 이내** 구매한 비율\n"
+            "- **재구매율**: 구매 후 **14일 이내** 재구매한 비율"
+        )
+
     month_df = conversion_df[conversion_df["년월"] == selected_month].copy()
     month_avg_conversion = month_df["첫구매전환율"].mean()
     month_avg_repurchase = month_df["재구매율"].mean()
