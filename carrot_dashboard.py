@@ -762,6 +762,183 @@ def add_share_column(sales_df: pd.DataFrame, group_cols: list[str]) -> pd.DataFr
     return result.sort_values("매출", ascending=False).reset_index(drop=True)
 
 
+def build_category_trend_df(
+    category_sales: pd.DataFrame,
+    period_mode: str,
+) -> tuple[pd.DataFrame, str]:
+    if period_mode == "일별":
+        trend_df = (
+            category_sales.groupby(["날짜", "분류"])["매출"]
+            .sum()
+            .reset_index()
+            .sort_values("날짜")
+        )
+        return trend_df, "날짜"
+    if period_mode == "주별":
+        trend_df = (
+            category_sales.groupby(["주시작", "분류"])["매출"]
+            .sum()
+            .reset_index()
+            .sort_values("주시작")
+        )
+        return trend_df, "주시작"
+    trend_df = (
+        category_sales.groupby(["년월", "분류"])["매출"]
+        .sum()
+        .reset_index()
+        .sort_values("년월")
+    )
+    return trend_df, "년월"
+
+
+def collapse_to_top_categories(
+    trend_df: pd.DataFrame,
+    x_col: str,
+    top_n: int,
+) -> pd.DataFrame:
+    totals = (
+        trend_df.groupby("분류")["매출"]
+        .sum()
+        .sort_values(ascending=False)
+    )
+    top_categories = totals.head(top_n).index.tolist()
+    collapsed = trend_df.copy()
+    collapsed["분류"] = collapsed["분류"].where(
+        collapsed["분류"].isin(top_categories),
+        "기타",
+    )
+    return (
+        collapsed.groupby([x_col, "분류"])["매출"]
+        .sum()
+        .reset_index()
+        .sort_values(x_col)
+    )
+
+
+def render_category_trend_chart(
+    trend_df: pd.DataFrame,
+    x_col: str,
+    period_mode: str,
+    color_map: dict,
+) -> None:
+    if trend_df.empty:
+        st.info("표시할 추이 데이터가 없습니다.")
+        return
+
+    if period_mode == "일별":
+        chart_options = ["누적 영역", "비중 추이 (%)", "히트맵", "꺾은선"]
+        default_chart = "누적 영역"
+    else:
+        chart_options = ["누적 영역", "비중 추이 (%)", "꺾은선"]
+        default_chart = "누적 영역"
+
+    control_col1, control_col2 = st.columns([2, 1])
+    with control_col1:
+        chart_type = st.radio(
+            "추이 차트",
+            chart_options,
+            index=chart_options.index(default_chart),
+            horizontal=True,
+            key=f"category_trend_chart_{period_mode}",
+        )
+    with control_col2:
+        if period_mode == "일별":
+            day_count = trend_df[x_col].nunique()
+            period_choices = [d for d in [7, 14, 30] if d < day_count]
+            period_choices.append(day_count)
+            default_period = 30 if 30 in period_choices else period_choices[-1]
+            recent_days = st.selectbox(
+                "기간",
+                period_choices,
+                index=period_choices.index(default_period),
+                format_func=lambda x: f"최근 {x}일" if x != day_count else "전체",
+                key="category_trend_recent_days",
+            )
+            if recent_days < day_count:
+                recent_dates = sorted(trend_df[x_col].unique())[-recent_days:]
+                trend_df = trend_df[trend_df[x_col].isin(recent_dates)]
+
+    plot_df = trend_df
+    if chart_type == "꺾은선":
+        category_count = plot_df["분류"].nunique()
+        top_n = st.slider(
+            "상위 분류만 표시",
+            min_value=3,
+            max_value=category_count,
+            value=min(5, category_count),
+            key=f"category_trend_top_n_{period_mode}",
+        )
+        plot_df = collapse_to_top_categories(plot_df, x_col, top_n)
+
+    pivot_df = (
+        plot_df.pivot(index=x_col, columns="분류", values="매출")
+        .fillna(0)
+        .sort_index()
+    )
+    category_cols = pivot_df.columns.tolist()
+
+    if chart_type == "누적 영역":
+        fig = px.area(
+            pivot_df.reset_index(),
+            x=x_col,
+            y=category_cols,
+            color_discrete_map=color_map,
+            title=f"분류별 {period_mode} 매출 추이 (누적)",
+            template="plotly_white",
+            labels={"value": "매출", "variable": "분류"},
+        )
+        fig.update_layout(height=440, yaxis_tickformat=",", hovermode="x unified")
+    elif chart_type == "비중 추이 (%)":
+        share_df = pivot_df.div(pivot_df.sum(axis=1), axis=0).fillna(0) * 100
+        fig = px.area(
+            share_df.reset_index(),
+            x=x_col,
+            y=category_cols,
+            color_discrete_map=color_map,
+            title=f"분류별 {period_mode} 매출 비중 추이",
+            template="plotly_white",
+            labels={"value": "비중(%)", "variable": "분류"},
+        )
+        fig.update_layout(
+            height=440,
+            yaxis_tickformat=".0f",
+            yaxis_title="비중(%)",
+            hovermode="x unified",
+            yaxis=dict(range=[0, 100]),
+        )
+    elif chart_type == "히트맵":
+        heatmap_df = pivot_df.T
+        fig = px.imshow(
+            heatmap_df,
+            aspect="auto",
+            color_continuous_scale="Blues",
+            title=f"분류별 {period_mode} 매출 히트맵",
+            labels=dict(x="날짜", y="분류", color="매출"),
+        )
+        fig.update_layout(height=max(360, len(category_cols) * 28))
+        fig.update_xaxes(tickangle=-45)
+    else:
+        fig = px.line(
+            plot_df,
+            x=x_col,
+            y="매출",
+            color="분류",
+            color_discrete_map=color_map,
+            markers=True,
+            title=f"분류별 {period_mode} 매출 추이",
+            template="plotly_white",
+        )
+        fig.update_layout(height=440, yaxis_tickformat=",", hovermode="x unified")
+
+    if x_col == "년월":
+        fig.update_xaxes(
+            tickvals=pivot_df.index.tolist(),
+            ticktext=[format_month_label(m) for m in pivot_df.index.tolist()],
+        )
+
+    st.plotly_chart(fig, width="stretch")
+
+
 def render_category_tab(df: pd.DataFrame, color_map: dict) -> None:
     category_sales = get_category_sales(df)
     period_mode = st.radio(
@@ -842,49 +1019,10 @@ def render_category_tab(df: pd.DataFrame, color_map: dict) -> None:
         st.plotly_chart(fig_bar, width="stretch")
 
     st.subheader("분류별 추이")
-
     if period_mode == "일별":
-        trend_df = (
-            category_sales.groupby(["날짜", "분류"])["매출"]
-            .sum()
-            .reset_index()
-            .sort_values("날짜")
-        )
-        x_col = "날짜"
-    elif period_mode == "주별":
-        trend_df = (
-            category_sales.groupby(["주시작", "분류"])["매출"]
-            .sum()
-            .reset_index()
-            .sort_values("주시작")
-        )
-        x_col = "주시작"
-    else:
-        trend_df = (
-            category_sales.groupby(["년월", "분류"])["매출"]
-            .sum()
-            .reset_index()
-            .sort_values("년월")
-        )
-        x_col = "년월"
-
-    fig_trend = px.line(
-        trend_df,
-        x=x_col,
-        y="매출",
-        color="분류",
-        color_discrete_map=color_map,
-        markers=True,
-        title=f"분류별 {period_mode} 매출 추이",
-        template="plotly_white",
-    )
-    fig_trend.update_layout(height=420, yaxis_tickformat=",", hovermode="x unified")
-    if x_col == "년월":
-        fig_trend.update_xaxes(
-            tickvals=trend_df["년월"].unique(),
-            ticktext=[format_month_label(m) for m in trend_df["년월"].unique()],
-        )
-    st.plotly_chart(fig_trend, width="stretch")
+        st.caption("일별 데이터는 기본 **누적 영역** 차트가 가장 보기 쉽습니다.")
+    trend_df, x_col = build_category_trend_df(category_sales, period_mode)
+    render_category_trend_chart(trend_df, x_col, period_mode, color_map)
 
     display_df = period_df[["분류", "매출", "비중"]].copy()
     display_df["매출"] = format_sales_column(display_df["매출"])
