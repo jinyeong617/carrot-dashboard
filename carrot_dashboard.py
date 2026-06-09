@@ -746,6 +746,349 @@ def render_monthly_tab(
     st.dataframe(monthly_display_detail, width="stretch", hide_index=True)
 
 
+@st.cache_data
+def get_category_sales(df: pd.DataFrame) -> pd.DataFrame:
+    return (
+        df.groupby(["날짜", "주시작", "주차", "년월", "분류"])["매출"]
+        .sum()
+        .reset_index()
+    )
+
+
+def add_share_column(sales_df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
+    result = sales_df.copy()
+    totals = result.groupby(group_cols)["매출"].transform("sum")
+    result["비중"] = result["매출"] / totals * 100
+    return result.sort_values("매출", ascending=False).reset_index(drop=True)
+
+
+def render_category_tab(df: pd.DataFrame, color_map: dict) -> None:
+    category_sales = get_category_sales(df)
+    period_mode = st.radio(
+        "집계 단위",
+        ["일별", "주별", "월별"],
+        horizontal=True,
+        key="category_period_mode",
+    )
+
+    if period_mode == "일별":
+        periods = sorted(category_sales["날짜"].unique(), reverse=True)
+        selected = st.selectbox(
+            "날짜 선택",
+            periods,
+            format_func=format_date_label,
+            key="category_daily_period",
+        )
+        period_df = category_sales[category_sales["날짜"] == selected]
+        period_label = format_date_label(pd.Timestamp(selected))
+        group_cols = ["날짜"]
+    elif period_mode == "주별":
+        week_map = (
+            category_sales[["주차", "주시작"]]
+            .drop_duplicates()
+            .sort_values("주시작", ascending=False)
+        )
+        week_options = week_map["주차"].tolist()
+        selected_week = st.selectbox("주 선택", week_options, key="category_week_period")
+        period_df = category_sales[category_sales["주차"] == selected_week]
+        period_label = selected_week
+        group_cols = ["주차"]
+    else:
+        months = sorted(category_sales["년월"].unique(), reverse=True)
+        selected_month = st.selectbox(
+            "월 선택",
+            months,
+            format_func=format_month_label,
+            key="category_month_period",
+        )
+        period_df = category_sales[category_sales["년월"] == selected_month]
+        period_label = format_month_label(selected_month)
+        group_cols = ["년월"]
+
+    period_df = add_share_column(period_df, group_cols)
+    total_sales = period_df["매출"].sum()
+
+    st.metric(f"{period_label} 분류별 총매출", f"{total_sales:,.0f} 원")
+
+    col_pie, col_bar = st.columns(2)
+
+    with col_pie:
+        fig_pie = px.pie(
+            period_df,
+            names="분류",
+            values="매출",
+            color="분류",
+            color_discrete_map=color_map,
+            title=f"{period_label} 분류 비중",
+            template="plotly_white",
+        )
+        fig_pie.update_traces(textposition="inside", textinfo="percent+label")
+        st.plotly_chart(fig_pie, width="stretch")
+
+    with col_bar:
+        fig_bar = px.bar(
+            period_df.sort_values("매출", ascending=True),
+            y="분류",
+            x="매출",
+            color="분류",
+            color_discrete_map=color_map,
+            text="매출",
+            title=f"{period_label} 분류별 매출",
+            template="plotly_white",
+            orientation="h",
+        )
+        fig_bar.update_layout(showlegend=False, xaxis_tickformat=",")
+        fig_bar.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
+        st.plotly_chart(fig_bar, width="stretch")
+
+    st.subheader("분류별 추이")
+
+    if period_mode == "일별":
+        trend_df = (
+            category_sales.groupby(["날짜", "분류"])["매출"]
+            .sum()
+            .reset_index()
+            .sort_values("날짜")
+        )
+        x_col = "날짜"
+    elif period_mode == "주별":
+        trend_df = (
+            category_sales.groupby(["주시작", "분류"])["매출"]
+            .sum()
+            .reset_index()
+            .sort_values("주시작")
+        )
+        x_col = "주시작"
+    else:
+        trend_df = (
+            category_sales.groupby(["년월", "분류"])["매출"]
+            .sum()
+            .reset_index()
+            .sort_values("년월")
+        )
+        x_col = "년월"
+
+    fig_trend = px.line(
+        trend_df,
+        x=x_col,
+        y="매출",
+        color="분류",
+        color_discrete_map=color_map,
+        markers=True,
+        title=f"분류별 {period_mode} 매출 추이",
+        template="plotly_white",
+    )
+    fig_trend.update_layout(height=420, yaxis_tickformat=",", hovermode="x unified")
+    if x_col == "년월":
+        fig_trend.update_xaxes(
+            tickvals=trend_df["년월"].unique(),
+            ticktext=[format_month_label(m) for m in trend_df["년월"].unique()],
+        )
+    st.plotly_chart(fig_trend, width="stretch")
+
+    display_df = period_df[["분류", "매출", "비중"]].copy()
+    display_df["매출"] = format_sales_column(display_df["매출"])
+    display_df["비중"] = display_df["비중"].map(lambda x: f"{x:.1f}%")
+    st.dataframe(display_df, width="stretch", hide_index=True)
+
+
+def render_compare_tab(
+    df: pd.DataFrame,
+    weekly_sales: pd.DataFrame,
+    monthly_sales: pd.DataFrame,
+    color_map: dict,
+) -> None:
+    compare_mode = st.radio(
+        "비교 단위",
+        ["일별", "주별", "월별"],
+        horizontal=True,
+        key="compare_mode",
+    )
+
+    if compare_mode == "일별":
+        periods = sorted(df["날짜"].unique(), reverse=True)
+        period_labels = [d.strftime("%Y-%m-%d") for d in periods]
+        col_a, col_b = st.columns(2)
+        with col_a:
+            label_a = st.selectbox("기준 A", period_labels, index=0, key="compare_day_a")
+        with col_b:
+            label_b = st.selectbox(
+                "기준 B",
+                period_labels,
+                index=min(1, len(period_labels) - 1),
+                key="compare_day_b",
+            )
+        date_a = pd.to_datetime(label_a)
+        date_b = pd.to_datetime(label_b)
+        df_a = df[df["날짜"] == date_a]
+        df_b = df[df["날짜"] == date_b]
+        title_a, title_b = format_date_label(date_a), format_date_label(date_b)
+    elif compare_mode == "주별":
+        week_options = weekly_sales["주차"].tolist()
+        col_a, col_b = st.columns(2)
+        with col_a:
+            week_a = st.selectbox("기준 A", week_options, index=len(week_options) - 1, key="compare_week_a")
+        with col_b:
+            week_b = st.selectbox(
+                "기준 B",
+                week_options,
+                index=max(0, len(week_options) - 2),
+                key="compare_week_b",
+            )
+        df_a = df[df["주차"] == week_a]
+        df_b = df[df["주차"] == week_b]
+        title_a, title_b = week_a, week_b
+    else:
+        months = monthly_sales["년월"].tolist()
+        col_a, col_b = st.columns(2)
+        with col_a:
+            month_a = st.selectbox("기준 A", months, index=len(months) - 1, key="compare_month_a")
+        with col_b:
+            month_b = st.selectbox(
+                "기준 B",
+                months,
+                index=max(0, len(months) - 2),
+                key="compare_month_b",
+            )
+        df_a = df[df["년월"] == month_a]
+        df_b = df[df["년월"] == month_b]
+        title_a, title_b = format_month_label(month_a), format_month_label(month_b)
+
+    total_a = df_a["매출"].sum()
+    total_b = df_b["매출"].sum()
+    diff = total_a - total_b
+    diff_pct = (diff / total_b * 100) if total_b else None
+
+    mcol1, mcol2, mcol3 = st.columns(3)
+    mcol1.metric(f"A · {title_a}", f"{total_a:,.0f} 원")
+    mcol2.metric(f"B · {title_b}", f"{total_b:,.0f} 원")
+    mcol3.metric(
+        "A − B",
+        f"{diff:+,.0f} 원",
+        delta=f"{diff_pct:+.1f}%" if diff_pct is not None else None,
+    )
+
+    cat_a = (
+        df_a.groupby("분류")["매출"].sum().reset_index().rename(columns={"매출": "매출_A"})
+    )
+    cat_b = (
+        df_b.groupby("분류")["매출"].sum().reset_index().rename(columns={"매출": "매출_B"})
+    )
+    cat_compare = cat_a.merge(cat_b, on="분류", how="outer").fillna(0)
+    cat_compare["차이"] = cat_compare["매출_A"] - cat_compare["매출_B"]
+    cat_plot = cat_compare.rename(columns={"매출_A": title_a, "매출_B": title_b})
+
+    fig_cat = px.bar(
+        cat_plot.sort_values(title_a, ascending=True),
+        y="분류",
+        x=[title_a, title_b],
+        barmode="group",
+        title="분류별 매출 비교",
+        template="plotly_white",
+        orientation="h",
+        labels={"value": "매출", "variable": "기간"},
+    )
+    fig_cat.update_layout(height=400, xaxis_tickformat=",")
+    st.plotly_chart(fig_cat, width="stretch")
+
+    st.subheader("분류별 비교 표")
+    cat_display = cat_compare.copy()
+    cat_display["매출_A"] = format_sales_column(cat_display["매출_A"])
+    cat_display["매출_B"] = format_sales_column(cat_display["매출_B"])
+    cat_display["차이"] = cat_display["차이"].map(lambda x: f"{x:+,.0f}")
+    cat_display = cat_display.rename(columns={"매출_A": title_a, "매출_B": title_b})
+    st.dataframe(cat_display, width="stretch", hide_index=True)
+
+    st.subheader("상위 상품 비교")
+
+    def top_products(source_df: pd.DataFrame, n: int = 10) -> pd.DataFrame:
+        return (
+            source_df.groupby(["상품", "분류"])["매출"]
+            .sum()
+            .reset_index()
+            .sort_values("매출", ascending=False)
+            .head(n)
+            .reset_index(drop=True)
+        )
+
+    pcol_a, pcol_b = st.columns(2)
+    with pcol_a:
+        st.markdown(f"**{title_a} TOP 10**")
+        top_a = top_products(df_a)
+        top_a["매출"] = format_sales_column(top_a["매출"])
+        st.dataframe(top_a, width="stretch", hide_index=True)
+    with pcol_b:
+        st.markdown(f"**{title_b} TOP 10**")
+        top_b = top_products(df_b)
+        top_b["매출"] = format_sales_column(top_b["매출"])
+        st.dataframe(top_b, width="stretch", hide_index=True)
+
+
+def render_help_tab() -> None:
+    st.subheader("인수인계 도움말")
+
+    with st.container(border=True):
+        st.markdown("### 매일 업무 (3단계)")
+        st.markdown(
+            "1. 엑셀에서 오늘 데이터를 **기존 파일 맨 아래에 추가** 후 저장\n"
+            "2. 왼쪽 사이드바 → **데이터 업로드** 탭\n"
+            "3. 파일 선택 → **적용** 클릭"
+        )
+
+    with st.container(border=True):
+        st.markdown("### 파일 2종류")
+        st.markdown(
+            "| 파일 | 용도 | 업로드 위치 |\n"
+            "|------|------|------------|\n"
+            "| `data.xlsx` | 일별·주별·월별 **매출** | 데이터 업로드 → **매출** |\n"
+            "| `monthly_kpi.xlsx` | **전환율·가입자** | 데이터 업로드 → **월간 KPI** |"
+        )
+        st.caption("당일 데이터만 올리지 말고, **누적된 전체 파일**을 업로드하세요.")
+
+    with st.container(border=True):
+        st.markdown("### 데이터 형식")
+        st.markdown(
+            "**`data.xlsx`** 필수 컬럼: `날짜`, `상품`, `분류`, `매출`\n\n"
+            "- 날짜 형식: `20260604` (YYYYMMDD)\n"
+            "- 매출: 숫자 (쉼표 있어도 됨)\n\n"
+            "**`monthly_kpi.xlsx`** 시트 2개:\n"
+            "- `전환_재구매`: 년월, 주차시작, 첫구매전환율, 재구매율\n"
+            "- `가입자`: 년월, 주차시작, 전체가입자, 전체업체수, 업체평균가입자"
+        )
+
+    with st.container(border=True):
+        st.markdown("### 지표 설명")
+        st.markdown(
+            "- **첫구매 전환율**: 가입 후 **7일 이내** 구매한 비율\n"
+            "- **재구매율**: 구매 후 **14일 이내** 재구매한 비율\n"
+            "- **이번 달 신규 (가입자)**: 해당 월 **첫 주~마지막 주** 사이 가입자 증가"
+        )
+
+    with st.container(border=True):
+        st.markdown("### 탭 안내")
+        st.markdown(
+            "| 탭 | 내용 |\n"
+            "|----|------|\n"
+            "| 일별 분석 | 선택한 날짜의 상품별 매출 |\n"
+            "| 주별 분석 | 주간 KPI · 상품별 매출 |\n"
+            "| 월별 분석 | 월간 KPI · 상품별 매출 |\n"
+            "| 분류별 매출 | 채소/식품 등 **분류** 비중·추이 |\n"
+            "| 기간 비교 | 두 날짜·주·월 매출 **나란히 비교** |\n"
+            "| 매출 추이 | 일/주/월 총매출 꺾은선 그래프 |\n"
+            "| 전환·재구매 | 주차별 전환율·재구매율 |\n"
+            "| 가입자 | 누적·주간 신규 가입자 |"
+        )
+
+    with st.container(border=True):
+        st.markdown("### 문제 해결")
+        st.markdown(
+            "- **데이터가 안 보여요** → 사이드바에서 파일 다시 업로드 후 **적용**\n"
+            "- **행 수가 줄었어요** → 전체 파일이 아닌 일부만 저장했을 수 있음. 백업 확인\n"
+            "- **그래프가 이상해요** → 날짜·컬럼명 형식이 맞는지 확인\n"
+            "- **영구 저장이 안 돼요** → Streamlit Cloud에 GitHub 토큰 설정 필요 (관리자 문의)"
+        )
+
+
 def build_color_map(categories) -> dict:
     colors = px.colors.qualitative.G10
     return {
@@ -770,7 +1113,7 @@ st.markdown(
     </h1>
 
     <p style='font-size:22px; color:gray;'>
-        일별 / 주별 / 월별 상품 매출 분석 시스템
+        일별 / 주별 / 월별 / 분류별 매출 분석 시스템
     </p>
     """,
     unsafe_allow_html=True,
@@ -855,8 +1198,18 @@ if df is not None and selected_date is not None:
     selected_data = daily_sales[daily_sales["날짜"] == selected_date]
     selected_data = selected_data.sort_values("매출", ascending=False)
 
-tab_daily, tab_weekly, tab_monthly, tab_trend, tab_conversion, tab_members = st.tabs(
-    ["일별 분석", "주별 분석", "월별 분석", "매출 추이", "전환·재구매", "가입자"]
+tab_daily, tab_weekly, tab_monthly, tab_category, tab_compare, tab_trend, tab_conversion, tab_members, tab_help = st.tabs(
+    [
+        "일별 분석",
+        "주별 분석",
+        "월별 분석",
+        "분류별 매출",
+        "기간 비교",
+        "매출 추이",
+        "전환·재구매",
+        "가입자",
+        "도움말",
+    ]
 )
 
 with tab_daily:
@@ -1005,6 +1358,20 @@ with tab_monthly:
         st.subheader("월간 KPI")
         render_monthly_tab(df, monthly_sales, color_map)
 
+with tab_category:
+    if df is None:
+        st.info("매출 데이터(`data.xlsx`)를 업로드하면 분류별 매출을 볼 수 있습니다.")
+    else:
+        st.subheader("분류별 매출")
+        render_category_tab(df, color_map)
+
+with tab_compare:
+    if df is None:
+        st.info("매출 데이터(`data.xlsx`)를 업로드하면 기간 비교를 할 수 있습니다.")
+    else:
+        st.subheader("기간 비교")
+        render_compare_tab(df, weekly_sales, monthly_sales, color_map)
+
 with tab_trend:
     if df is None:
         st.info("매출 데이터(`data.xlsx`)를 업로드하면 매출 추이를 볼 수 있습니다.")
@@ -1096,3 +1463,6 @@ with tab_members:
     else:
         st.subheader("가입자 추이")
         render_members_tab(members_df)
+
+with tab_help:
+    render_help_tab()
